@@ -97,7 +97,7 @@ class VisibilityCalculator:
                       endcap: int,  # 0 or 1
                       facings: int,
                       traffic_per_hour: float,
-                      distance_from_aisle_center: float = 2.5) -> Dict[str, float]:
+                      distance_from_shopper_cm: float = 80.0) -> Dict[str, float]:
         """
         Calculate visibility score for a product
         
@@ -106,7 +106,7 @@ class VisibilityCalculator:
             endcap: 0 for mid-aisle, 1 for end cap
             facings: Number of product facings
             traffic_per_hour: Foot traffic past the product
-            distance_from_aisle_center: Distance from aisle center in meters
+            distance_from_shopper_cm: Horizontal distance from shopper in cm (default: 80cm)
             
         Returns:
             Dictionary with visibility score and breakdown
@@ -116,8 +116,8 @@ class VisibilityCalculator:
         traffic_level = self.categorize_traffic(traffic_per_hour)
         shelf_category = self.get_shelf_category(shelf_height_cm)
         
-        # Calculate horizontal distance (convert from aisle center distance)
-        horizontal_distance = 80 + (distance_from_aisle_center * 10)
+        # Use distance directly (no conversion needed)
+        horizontal_distance = distance_from_shopper_cm
         
         # Get weights
         shelf_weight = self.weights['shelf_weights'][shelf_category]
@@ -135,11 +135,30 @@ class VisibilityCalculator:
         
         # Combine factors
         base_score = (shelf_weight * shelf_contrib + sightline * sightline_contrib)
-        raw_score = base_score * aisle_mult * traffic_mult * math.sqrt(facings)
+        
+        # Facings factor: 1 facing = 0.7x, 2 facings = 1.0x, 4+ facings = 1.3x
+        if facings == 1:
+            facings_factor = 0.7
+        elif facings == 2:
+            facings_factor = 1.0
+        elif facings == 3:
+            facings_factor = 1.15
+        else:  # 4 or more
+            facings_factor = 1.3
+        
+        raw_score = base_score * aisle_mult * traffic_mult * facings_factor
         
         # Normalize to 0-100 scale
-        max_possible = 1.0 * 6.0 * 1.5 * 3  # max theoretical score
-        visibility_score = (raw_score / max_possible) * 100
+        # Use different benchmarks for end cap vs mid-aisle
+        if is_end_cap:
+            # End cap: max score = perfect placement on end cap
+            reference_score = 1.0 * 4.0 * 1.2 * 1.3  # = 6.24
+        else:
+            # Mid-aisle: max score = perfect mid-aisle placement
+            # Scale so that perfect mid-aisle (eye level, high traffic, 4 facings) ≈ 75/100
+            reference_score = 1.0 * 1.0 * 1.2 * 1.3 / 0.75  # = 2.08
+        
+        visibility_score = min(100, (raw_score / reference_score) * 100)
         
         return {
             'visibility_score': round(visibility_score, 2),
@@ -154,7 +173,7 @@ class VisibilityCalculator:
                 'traffic_level': traffic_level,
                 'traffic_multiplier': round(traffic_mult, 2),
                 'facings': facings,
-                'facings_boost': round(math.sqrt(facings), 2),
+                'facings_factor': round(facings_factor, 2),
                 'raw_score': round(raw_score, 3)
             }
         }
@@ -319,7 +338,7 @@ if __name__ == "__main__":
                     'endcap': 0,
                     'facings': 4,
                     'traffic_per_hour': 139.5,
-                    'distance_from_aisle_center': 2.5
+                    'distance_from_shopper_cm': 90.0
                 }
             },
             {
@@ -329,7 +348,7 @@ if __name__ == "__main__":
                     'endcap': 1,
                     'facings': 5,
                     'traffic_per_hour': 250.0,
-                    'distance_from_aisle_center': 0.5
+                    'distance_from_shopper_cm': 70.0
                 }
             },
             {
@@ -339,20 +358,25 @@ if __name__ == "__main__":
                     'endcap': 0,
                     'facings': 2,
                     'traffic_per_hour': 100.0,
-                    'distance_from_aisle_center': 4.0
+                    'distance_from_shopper_cm': 120.0
                 }
             }
         ]
         
-        # Check if optimized weights exist
-        import os
-        weights_file = 'optimized_weights.json' if os.path.exists('optimized_weights.json') else None
+        # Use default weights (not optimized)
+        print("\n✓ Using DEFAULT weights (theoretical visibility model)")
+        print("   To use optimized weights, pass 'optimized' as argument:")
+        print("   python main.py test optimized")
         
-        if weights_file:
-            print("\n✓ Using optimized weights from training")
-        else:
-            print("\n⚠️  No trained model found. Using default weights.")
-            print("   Run 'python main.py train <csv_path>' to train first.")
+        weights_file = None
+        if len(sys.argv) > 2 and sys.argv[2].lower() == 'optimized':
+            import os
+            if os.path.exists('optimized_weights.json'):
+                weights_file = 'optimized_weights.json'
+                print("\n✓ Using OPTIMIZED weights from training data")
+            else:
+                print("\n⚠️  No optimized weights found. Using defaults.")
+                print("   Run 'python main.py train <csv_path>' to train first.")
         
         # Test each item
         for test_item in test_items:
