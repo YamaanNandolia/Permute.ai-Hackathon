@@ -232,7 +232,6 @@ export class AgentEngine {
    * Apply actions to the store (used by agents in their act() method)
    */
   applyActions(actions: AgentAction[]): { applied: number; errors: string[] } {
-    const store = useCanvasStore.getState();
     const errors: string[] = [];
     let applied = 0;
 
