@@ -40,6 +40,14 @@ function Board(height, width) {
   this.productDragAction = null;
   this.dragAction = null;
   this.multiTargetRunning = false;
+  // Store layout data
+  this.shelfData = {}; // Stores shelf tier information for each product node
+  this.lastComputedPath = null; // Stores the last A* path computed
+  this.storeMetadata = {
+    name: "",
+    created: null,
+    description: ""
+  };
 }
 
 Board.prototype.initialise = function() {
@@ -355,14 +363,24 @@ Board.prototype.runShoppingPath = function() {
   }
 
   this.multiTargetRunning = true;
+  
+  // Store the full path for export
+  const fullPath = {
+    start: this.start,
+    productSequence: sequence,
+    target: this.target,
+    legs: []
+  };
 
   const runLeg = (idx) => {
     if (idx >= legs.length) {
       this.multiTargetRunning = false;
       const summary = ["Start: " + this.start].concat(sequence.map((p, i) => `P${i + 1}: ${p}`)).concat(["End: " + this.target]).join("  ->  ");
       document.getElementById("algorithmDescriptor").innerHTML = `Shopping route (greedy): ${summary}`;
-      this.toggleButtons();
       this.algoDone = true;
+      this.lastComputedPath = fullPath; // Store the path
+      this.ensureButtonsOn();
+      this.updateClearButtons();
       return;
     }
 
@@ -392,6 +410,14 @@ Board.prototype.runShoppingPath = function() {
       pathNodes.unshift(cur);
       cur = this.nodes[cur.previousNode];
     }
+    
+    // Record this leg in the full path
+    fullPath.legs.push({
+      from: from,
+      to: to,
+      pathNodes: pathNodes.map(n => n.id)
+    });
+    
     document.getElementById(from).className = "startTransparent";
     document.getElementById(to).className = "visitedTargetNodeBlue";
 
@@ -403,7 +429,6 @@ Board.prototype.runShoppingPath = function() {
     }, type);
   };
 
-  this.toggleButtons();
   runLeg(0);
 };
 
@@ -530,6 +555,235 @@ Board.prototype.redoAlgorithm = function() {
   this.instantAlgorithm();
 };
 
+Board.prototype.reset = function(objectNotTransparent) {
+  // Ensure controls are enabled after animations complete
+  this.ensureButtonsOn();
+};
+
+Board.prototype.complete = function() {
+  this.algoDone = true;
+  this.ensureButtonsOn();
+  this.updateClearButtons();
+}
+
+Board.prototype.addShortestPath = function(targetNode, startNode, type) {
+  let currentNode = this.nodes[targetNode];
+  let nodes = [];
+  while (currentNode.id !== startNode) {
+    nodes.unshift(currentNode);
+    currentNode = this.nodes[currentNode.previousNode];
+  }
+  if (type === "object") {
+    this.objectShortestPathNodesToAnimate = nodes;
+  } else {
+    this.shortestPathNodesToAnimate = nodes;
+  }
+};
+
+Board.prototype.drawShortestPathTimeout = function(targetNode, startNode, type, objectType) {
+  let currentNode = this.nodes[targetNode];
+  let nodes = [];
+  while (currentNode.id !== startNode) {
+    nodes.unshift(currentNode);
+    currentNode = this.nodes[currentNode.previousNode];
+  }
+  if (objectType === "object") {
+    this.objectShortestPathNodesToAnimate = nodes;
+  } else {
+    this.shortestPathNodesToAnimate = nodes;
+  }
+};
+
+Board.prototype.ensureButtonsOn = function() {
+  if (!this.buttonsOn) {
+    this.toggleButtons();
+  }
+};
+
+Board.prototype.updateClearButtons = function() {
+  if (this.algoDone) {
+    // Hide clear buttons that start with "clear"
+    document.getElementById("startButtonClearBoard").style.display = "none";
+    document.getElementById("startButtonClearWalls").style.display = "none";
+    document.getElementById("startButtonClearPath").style.display = "none";
+    document.getElementById("startButtonClearProducts").style.display = "none";
+    // Show Reset and Save Store buttons
+    document.getElementById("startButtonReset").style.display = "block";
+    document.getElementById("startButtonSaveStore").style.display = "block";
+  } else {
+    // Show clear buttons
+    document.getElementById("startButtonClearBoard").style.display = "block";
+    document.getElementById("startButtonClearWalls").style.display = "block";
+    document.getElementById("startButtonClearPath").style.display = "block";
+    document.getElementById("startButtonClearProducts").style.display = "block";
+    // Hide Reset and Save Store buttons
+    document.getElementById("startButtonReset").style.display = "none";
+    document.getElementById("startButtonSaveStore").style.display = "none";
+  }
+};
+
+Board.prototype.clearBoard = function() {
+  document.getElementById("startButtonAddObject").innerHTML = '<a href="#">Add Bomb</a></li>';
+
+  let navbarHeight = document.getElementById("navbarDiv").clientHeight;
+  let textHeight = document.getElementById("mainText").clientHeight + document.getElementById("algorithmDescriptor").clientHeight;
+  let height = Math.floor((document.documentElement.clientHeight - navbarHeight - textHeight) / 28);
+  let width = Math.floor(document.documentElement.clientWidth / 25);
+  let start = Math.floor(height / 2).toString() + "-" + Math.floor(width / 4).toString();
+  let target = Math.floor(height / 2).toString() + "-" + Math.floor(3 * width / 4).toString();
+
+  Object.keys(this.nodes).forEach(id => {
+    let currentNode = this.nodes[id];
+    let currentHTMLNode = document.getElementById(id);
+    if (id === start) {
+      currentHTMLNode.className = "start";
+      currentNode.status = "start";
+    } else if (id === target) {
+      currentHTMLNode.className = "target";
+      currentNode.status = "target"
+    } else {
+      currentHTMLNode.className = "unvisited";
+      currentNode.status = "unvisited";
+    }
+    currentNode.previousNode = null;
+    currentNode.path = null;
+    currentNode.direction = null;
+    currentNode.storedDirection = null;
+    currentNode.distance = Infinity;
+    currentNode.totalDistance = Infinity;
+    currentNode.heuristicDistance = null;
+    currentNode.weight = 0;
+    currentNode.relatesToObject = false;
+    currentNode.overwriteObjectRelation = false;
+  });
+  this.start = start;
+  this.target = target;
+  this.object = null;
+  this.nodesToAnimate = [];
+  this.objectNodesToAnimate = [];
+  this.shortestPathNodesToAnimate = [];
+  this.objectShortestPathNodesToAnimate = [];
+  this.wallsToAnimate = [];
+  this.mouseDown = false;
+  this.pressedNodeStatus = "normal";
+  this.previouslyPressedNodeStatus = null;
+  this.previouslySwitchedNode = null;
+  this.previouslySwitchedNodeWeight = 0;
+  this.keyDown = false;
+  this.algoDone = false;
+  this.numberOfObjects = 0;
+  this.isObject = false;
+  this.clearProducts();
+  this.products = [];
+  this.dummyProducts = [];
+  this.productMode = false;
+  this.dummyProductMode = false;
+  document.getElementById("startButtonToggleProducts").innerHTML = '<a href="#">Products: Off</a>';
+  document.getElementById("startButtonToggleDummy").innerHTML = '<a href="#">Dummy Mode: Off</a>';
+  this.updateClearButtons();
+};
+
+Board.prototype.exportStoreData = function() {
+  // Create a matrix representation of the board
+  const matrix = [];
+  for (let r = 0; r < this.height; r++) {
+    const row = [];
+    for (let c = 0; c < this.width; c++) {
+      const node = this.boardArray[r][c];
+      let cellValue = 0; // 0 = unvisited/empty
+      
+      if (node.status === "wall") cellValue = 1; // wall
+      else if (node.status === "product") cellValue = 2; // product (yellow/target)
+      else if (node.status === "dummy-product") cellValue = 3; // dummy product (red/obstacle)
+      else if (node.status === "start") cellValue = 4; // start
+      else if (node.status === "target") cellValue = 5; // target
+      else if (node.weight === 15) cellValue = 6; // weighted node
+      
+      row.push(cellValue);
+    }
+    matrix.push(row);
+  }
+  
+  // Create the complete store data structure
+  const storeData = {
+    metadata: {
+      name: this.storeMetadata.name || `Store_${new Date().toISOString()}`,
+      created: new Date().toISOString(),
+      description: this.storeMetadata.description || "Auto-generated store layout",
+      dimensions: {
+        height: this.height,
+        width: this.width
+      }
+    },
+    layout: {
+      matrix: matrix,
+      start: this.start,
+      target: this.target,
+      products: this.products.slice(),
+      dummyProducts: this.dummyProducts.slice(),
+      walls: Object.keys(this.nodes).filter(id => this.nodes[id].status === "wall")
+    },
+    shelfData: this.shelfData, // Shelf tier information for each product
+    path: this.lastComputedPath, // The A* computed path
+    algorithm: {
+      name: this.currentAlgorithm,
+      heuristic: this.currentHeuristic
+    }
+  };
+  
+  return storeData;
+};
+
+Board.prototype.saveStoreToServer = async function() {
+  const storeData = this.exportStoreData();
+  
+  try {
+    const response = await fetch('/api/save-store', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(storeData)
+    });
+    
+    const result = await response.json();
+    
+    if (result.success) {
+      alert(`Store saved successfully!\nFile: ${result.filename}\nPath: ${result.path}`);
+      console.log("Store data saved:", result);
+    } else {
+      alert(`Failed to save store: ${result.message}`);
+      console.error("Save failed:", result);
+    }
+    
+    return result;
+  } catch (error) {
+    alert(`Error saving store: ${error.message}`);
+    console.error("Error saving store:", error);
+    return { success: false, error: error.message };
+  }
+};
+
+Board.prototype.setShelfTier = function(nodeId, tier, productInfo) {
+  // tier: 'lower', 'middle', 'higher'
+  // productInfo: { name, barcode, price, etc. }
+  if (!this.shelfData[nodeId]) {
+    this.shelfData[nodeId] = {
+      lower: null,
+      middle: null,
+      higher: null
+    };
+  }
+  this.shelfData[nodeId][tier] = productInfo;
+};
+
+Board.prototype.getShelfTier = function(nodeId, tier) {
+  if (this.shelfData[nodeId]) {
+    return this.shelfData[nodeId][tier];
+  }
+  return null;
+};
+
 Board.prototype.toggleButtons = function() {
   document.getElementById("refreshButton").onclick = () => {
     window.location.reload(true);
@@ -537,6 +791,7 @@ Board.prototype.toggleButtons = function() {
 
   if (!this.buttonsOn) {
     this.buttonsOn = true;
+    this.updateClearButtons();
 
     // Visualize button - always uses A*
     document.getElementById("startButtonStart").onclick = () => {
@@ -602,71 +857,28 @@ Board.prototype.toggleButtons = function() {
     }
 
     // Clear controls
-    document.getElementById("startButtonClearBoard").onclick = () => {
-      document.getElementById("startButtonAddObject").innerHTML = '<a href="#">Add Bomb</a></li>';
-
-      let navbarHeight = document.getElementById("navbarDiv").clientHeight;
-      let textHeight = document.getElementById("mainText").clientHeight + document.getElementById("algorithmDescriptor").clientHeight;
-      let height = Math.floor((document.documentElement.clientHeight - navbarHeight - textHeight) / 28);
-      let width = Math.floor(document.documentElement.clientWidth / 25);
-      let start = Math.floor(height / 2).toString() + "-" + Math.floor(width / 4).toString();
-      let target = Math.floor(height / 2).toString() + "-" + Math.floor(3 * width / 4).toString();
-
-      Object.keys(this.nodes).forEach(id => {
-        let currentNode = this.nodes[id];
-        let currentHTMLNode = document.getElementById(id);
-        if (id === start) {
-          currentHTMLNode.className = "start";
-          currentNode.status = "start";
-        } else if (id === target) {
-          currentHTMLNode.className = "target";
-          currentNode.status = "target"
-        } else {
-          currentHTMLNode.className = "unvisited";
-          currentNode.status = "unvisited";
-        }
-        currentNode.previousNode = null;
-        currentNode.path = null;
-        currentNode.direction = null;
-        currentNode.storedDirection = null;
-        currentNode.distance = Infinity;
-        currentNode.totalDistance = Infinity;
-        currentNode.heuristicDistance = null;
-        currentNode.weight = 0;
-        currentNode.relatesToObject = false;
-        currentNode.overwriteObjectRelation = false;
-      });
-      this.start = start;
-      this.target = target;
-      this.object = null;
-      this.nodesToAnimate = [];
-      this.objectNodesToAnimate = [];
-      this.shortestPathNodesToAnimate = [];
-      this.objectShortestPathNodesToAnimate = [];
-      this.wallsToAnimate = [];
-      this.mouseDown = false;
-      this.pressedNodeStatus = "normal";
-      this.previouslyPressedNodeStatus = null;
-      this.previouslySwitchedNode = null;
-      this.previouslySwitchedNodeWeight = 0;
-      this.keyDown = false;
-      this.algoDone = false;
-      this.numberOfObjects = 0;
-      this.isObject = false;
-      this.clearProducts();
-      this.products = [];
-      this.dummyProducts = [];
-      this.productMode = false;
-      this.dummyProductMode = false;
-      document.getElementById("startButtonToggleProducts").innerHTML = '<a href="#">Products: Off</a>';
-      document.getElementById("startButtonToggleDummy").innerHTML = '<a href="#">Dummy Mode: Off</a>';
+    document.querySelector("#startButtonClearBoard a").onclick = (e) => {
+      e.preventDefault();
+      this.clearBoard();
     }
 
-    document.getElementById("startButtonClearWalls").onclick = () => {
+    document.querySelector("#startButtonReset a").onclick = (e) => {
+      e.preventDefault();
+      this.clearBoard();
+    }
+    
+    document.querySelector("#startButtonSaveStore a").onclick = (e) => {
+      e.preventDefault();
+      this.saveStoreToServer();
+    }
+
+    document.querySelector("#startButtonClearWalls a").onclick = (e) => {
+      e.preventDefault();
       this.clearWalls();
     }
 
-   document.getElementById("startButtonClearPath").onclick = () => {
+    document.querySelector("#startButtonClearPath a").onclick = (e) => {
+      e.preventDefault();
       this.clearPath("clickedButton");
     }
 
@@ -703,6 +915,7 @@ Board.prototype.toggleButtons = function() {
     document.getElementById("startButtonClearPath").className = "navbar-inverse navbar-nav";
     document.getElementById("startButtonClearWalls").className = "navbar-inverse navbar-nav";
     document.getElementById("startButtonClearBoard").className = "navbar-inverse navbar-nav";
+    document.getElementById("startButtonReset").className = "navbar-inverse navbar-nav";
     document.getElementById("startButtonAddObject").className = "navbar-inverse navbar-nav";
     document.getElementById("startButtonCreateMazeOne").className = "navbar-inverse navbar-nav";
     document.getElementById("adjustFast").className = "navbar-inverse navbar-nav";
@@ -712,6 +925,7 @@ Board.prototype.toggleButtons = function() {
     document.getElementById("startButtonToggleDummy").className = "navbar-inverse navbar-nav";
     document.getElementById("startButtonRunShopping").className = "navbar-inverse navbar-nav";
     document.getElementById("startButtonClearProducts").className = "navbar-inverse navbar-nav";
+    document.getElementById("startButtonSaveStore").className = "navbar-inverse navbar-nav";
     document.getElementById("actualStartButton").style.backgroundColor = "";
 
   } else {
@@ -722,6 +936,7 @@ Board.prototype.toggleButtons = function() {
     document.getElementById("startButtonClearWalls").onclick = null;
     document.getElementById("startButtonClearBoard").onclick = null;
     document.getElementById("startButtonStart").onclick = null;
+    document.getElementById("startButtonSaveStore").onclick = null;
     document.getElementById("adjustFast").onclick = null;
     document.getElementById("adjustAverage").onclick = null;
     document.getElementById("adjustSlow").onclick = null;
@@ -732,6 +947,8 @@ Board.prototype.toggleButtons = function() {
     document.getElementById("startButtonClearPath").className = "navbar-inverse navbar-nav disabledA";
     document.getElementById("startButtonClearWalls").className = "navbar-inverse navbar-nav disabledA";
     document.getElementById("startButtonClearBoard").className = "navbar-inverse navbar-nav disabledA";
+    document.getElementById("startButtonReset").className = "navbar-inverse navbar-nav disabledA";
+    document.getElementById("startButtonSaveStore").className = "navbar-inverse navbar-nav disabledA";
     document.getElementById("startButtonAddObject").className = "navbar-inverse navbar-nav disabledA";
     document.getElementById("startButtonToggleProducts").className = "navbar-inverse navbar-nav disabledA";
     document.getElementById("startButtonToggleDummy").className = "navbar-inverse navbar-nav disabledA";

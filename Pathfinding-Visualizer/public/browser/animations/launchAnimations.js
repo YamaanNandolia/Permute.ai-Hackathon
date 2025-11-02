@@ -31,7 +31,6 @@ function launchAnimations(board, success, type, object, algorithm, heuristic) {
           } else {
             console.log("Failure.");
             board.reset();
-            board.toggleButtons();
             return;
           }
         } else {
@@ -50,14 +49,13 @@ function launchAnimations(board, success, type, object, algorithm, heuristic) {
               board.drawShortestPathTimeout(board.target, board.start, type);
               board.objectShortestPathNodesToAnimate = [];
               board.shortestPathNodesToAnimate = [];
-              board.reset();
             }
             shortestNodes = board.objectShortestPathNodesToAnimate.concat(board.shortestPathNodesToAnimate);
+            shortestPathTimeout(0);
             return;
           } else {
             console.log("Failure.");
             board.reset();
-            board.toggleButtons();
             return;
           }
         }
@@ -129,6 +127,7 @@ function launchAnimations(board, success, type, object, algorithm, heuristic) {
           shortestPathChange(board.nodes[board.target], shortestNodes[index - 1]);
           board.objectShortestPathNodesToAnimate = [];
           board.shortestPathNodesToAnimate = [];
+          board.complete();
           return;
         }
       } else if (index === 0) {
