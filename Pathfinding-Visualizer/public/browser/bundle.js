@@ -691,22 +691,20 @@ Board.prototype.runShoppingPath = function() {
 
   const origStart = this.start;
   const origTarget = this.target;
-  
-  const weightedAlgorithms = ["dijkstra", "CLA", "greedy", "astar"];
-  const type = weightedAlgorithms.includes(this.currentAlgorithm) ? "weighted" : "unweighted";
 
-  const products = this.products.slice();
-  const sequence = this._computeGreedyOrder(this.start, products);
+  const weighted = ["dijkstra","CLA","greedy","astar"].includes(this.currentAlgorithm);
+  const type = weighted ? "weighted" : "unweighted";
+
+  const sequence = this._computeGreedyOrder(this.start, this.products.slice());
   const stops = sequence.concat([this.target]);
 
   const legs = [];
   let from = this.start;
-  for (const to of stops) {
-    legs.push({ from, to });
-    from = to;
-  }
+  for (const to of stops) { legs.push({ from, to }); from = to; }
 
   this.multiTargetRunning = true;
+
+  this._routeCapture = { start: this.start, end: this.target, stops: sequence.slice(), segments: [], path: [] };
 
   const runLeg = (idx) => {
     if (idx >= legs.length) {
@@ -720,7 +718,7 @@ Board.prototype.runShoppingPath = function() {
       if (tEl) tEl.className = "target";
 
       const summary = ["Start: " + origStart]
-        .concat(sequence.map((p, i) => `P${i + 1}: ${p}`))
+        .concat(sequence.map((p,i)=>`P${i+1}: ${p}`))
         .concat(["End: " + origTarget]).join("  ->  ");
       document.getElementById("algorithmDescriptor").innerHTML =
         `Shopping route (greedy): ${summary}`;
@@ -729,6 +727,8 @@ Board.prototype.runShoppingPath = function() {
       if (!this.buttonsOn) this.toggleButtons();
       document.getElementById("startButtonReset").style.display = "block";
       document.getElementById("startButtonSaveStore").style.display = "block";
+
+      this.lastRoute = this._routeCapture;
       return;
     }
 
@@ -740,13 +740,10 @@ Board.prototype.runShoppingPath = function() {
     this.nodesToAnimate = [];
 
     let success = false;
-    if (type === "weighted") {
-      success = weightedSearchAlgorithm(this.nodes, this.start, this.target, this.nodesToAnimate, this.boardArray, this.currentAlgorithm, this.currentHeuristic);
-    } else {
-      success = unweightedSearchAlgorithm(this.nodes, this.start, this.target, this.nodesToAnimate, this.boardArray, this.currentAlgorithm);
-    }
+    success = weighted
+      ? weightedSearchAlgorithm(this.nodes, this.start, this.target, this.nodesToAnimate, this.boardArray, this.currentAlgorithm, this.currentHeuristic)
+      : unweightedSearchAlgorithm(this.nodes, this.start, this.target, this.nodesToAnimate, this.boardArray, this.currentAlgorithm);
     if (!success) {
-      console.log("Leg failed from", from, "to", to);
       this.multiTargetRunning = false;
       this.toggleButtons();
       return;
@@ -754,17 +751,21 @@ Board.prototype.runShoppingPath = function() {
 
     let pathNodes = [];
     let cur = this.nodes[this.nodes[to].previousNode];
-    while (cur && cur.id !== from) {
-      pathNodes.unshift(cur);
-      cur = this.nodes[cur.previousNode];
+    while (cur && cur.id !== from) { pathNodes.unshift(cur); cur = this.nodes[cur.previousNode]; }
+
+    const seg = [from].concat(pathNodes.map(n => n.id)).concat([to]);
+    this._routeCapture.segments.push(seg);
+    if (this._routeCapture.path.length === 0) {
+      this._routeCapture.path = seg.slice();
+    } else {
+      this._routeCapture.path = this._routeCapture.path.concat(seg.slice(1));
     }
+
     document.getElementById(from).className = "startTransparent";
     document.getElementById(to).className = "visitedTargetNodeBlue";
 
     this._animatePathNodes(pathNodes, () => {
-      if (this.products.includes(to)) {
-        this.products = this.products.filter(id => id !== to);
-      }
+      if (this.products.includes(to)) this.products = this.products.filter(id => id !== to);
       runLeg(idx + 1);
     }, type);
   };
@@ -772,6 +773,8 @@ Board.prototype.runShoppingPath = function() {
   this.toggleButtons();
   runLeg(0);
 };
+
+
 
 Board.prototype.createMazeOne = function(type) {
   Object.keys(this.nodes).forEach(node => {
@@ -907,23 +910,28 @@ Board.prototype.resetBoard = function() {
 };
 
 Board.prototype.saveStoreToServer = function() {
-  const walls = [];
-  const weights = [];
-  Object.keys(this.nodes).forEach(id => {
-    const n = this.nodes[id];
-    if (n.status === "wall") walls.push(id);
-    if (n.weight === 15) weights.push(id);
-  });
+  const route = this.lastRoute && this.lastRoute.path ? this.lastRoute : {
+    start: this.start,
+    end: this.target,
+    stops: this.products.slice(),
+    segments: [],
+    path: []
+  };
 
   const payload = {
-    height: this.height,
-    width: this.width,
-    start: this.start,
-    target: this.target,
-    products: this.products.slice(),
-    dummyProducts: this.dummyProducts.slice(),
-    walls,
-    weights
+    meta: {
+      height: this.height,
+      width: this.width,
+      algorithm: this.currentAlgorithm || "astar",
+      savedAt: new Date().toISOString()
+    },
+    route: {
+      start: route.start,
+      end: route.end,
+      stops: route.stops,
+      segments: route.segments,  // array of arrays of node ids per leg
+      path: route.path           // flattened ordered node ids for whole trip
+    }
   };
 
   fetch("/api/save-store", {
@@ -934,14 +942,13 @@ Board.prototype.saveStoreToServer = function() {
   .then(r => r.json())
   .then(j => {
     if (!j.success) throw new Error(j.message || "save failed");
-    document.getElementById("algorithmDescriptor").innerHTML =
-      `Saved: ${j.filename}`;
+    document.getElementById("algorithmDescriptor").innerHTML = `Saved: ${j.filename}`;
   })
   .catch(err => {
-    document.getElementById("algorithmDescriptor").innerHTML =
-      `Save error: ${err.message}`;
+    document.getElementById("algorithmDescriptor").innerHTML = `Save error: ${err.message}`;
   });
 };
+
 
 
 
