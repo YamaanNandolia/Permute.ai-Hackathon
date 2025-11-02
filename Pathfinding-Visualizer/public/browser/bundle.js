@@ -680,6 +680,17 @@ Board.prototype.updateClearButtons = function() {
   }
 };
 
+Board.prototype._neighbors4 = function(id){
+  const [x,y] = id.split("-").map(Number);
+  const n = [];
+  if (this.boardArray[x-1] && this.boardArray[x-1][y]) n.push(`${x-1}-${y}`);
+  if (this.boardArray[x+1] && this.boardArray[x+1][y]) n.push(`${x+1}-${y}`);
+  if (this.boardArray[x] && this.boardArray[x][y-1]) n.push(`${x}-${y-1}`);
+  if (this.boardArray[x] && this.boardArray[x][y+1]) n.push(`${x}-${y+1}`);
+  return n;
+};
+
+
 
 Board.prototype.setButtonsEnabled = function(on) {
   if (on && !this.buttonsOn) this.toggleButtons();
@@ -704,7 +715,16 @@ Board.prototype.runShoppingPath = function() {
 
   this.multiTargetRunning = true;
 
-  this._routeCapture = { start: this.start, end: this.target, stops: sequence.slice(), segments: [], path: [] };
+  this._routeCapture = {
+    start: this.start,
+    end: this.target,
+    stops: sequence.slice(),
+    segments: [],
+    path: [],
+    segmentDummyAdjacent: [],
+    dummyAdjacent: [],
+    _dummySet: new Set(this.dummyProducts.slice())
+  };
 
   const runLeg = (idx) => {
     if (idx >= legs.length) {
@@ -739,8 +759,7 @@ Board.prototype.runShoppingPath = function() {
     this.target = to;
     this.nodesToAnimate = [];
 
-    let success = false;
-    success = weighted
+    const success = weighted
       ? weightedSearchAlgorithm(this.nodes, this.start, this.target, this.nodesToAnimate, this.boardArray, this.currentAlgorithm, this.currentHeuristic)
       : unweightedSearchAlgorithm(this.nodes, this.start, this.target, this.nodesToAnimate, this.boardArray, this.currentAlgorithm);
     if (!success) {
@@ -749,16 +768,27 @@ Board.prototype.runShoppingPath = function() {
       return;
     }
 
-    let pathNodes = [];
+    const pathNodes = [];
     let cur = this.nodes[this.nodes[to].previousNode];
     while (cur && cur.id !== from) { pathNodes.unshift(cur); cur = this.nodes[cur.previousNode]; }
 
     const seg = [from].concat(pathNodes.map(n => n.id)).concat([to]);
     this._routeCapture.segments.push(seg);
-    if (this._routeCapture.path.length === 0) {
-      this._routeCapture.path = seg.slice();
-    } else {
-      this._routeCapture.path = this._routeCapture.path.concat(seg.slice(1));
+    this._routeCapture.path = this._routeCapture.path.length ? this._routeCapture.path.concat(seg.slice(1)) : seg.slice();
+
+    {
+      const seen = new Set();
+      const nearDummy = [];
+      for (const nid of seg) {
+        for (const nb of this._neighbors4(nid)) {
+          if (this._routeCapture._dummySet.has(nb) && !seen.has(nb)) {
+            seen.add(nb);
+            nearDummy.push(nb);
+          }
+        }
+      }
+      this._routeCapture.segmentDummyAdjacent.push(nearDummy);
+      for (const d of nearDummy) if (!this._routeCapture.dummyAdjacent.includes(d)) this._routeCapture.dummyAdjacent.push(d);
     }
 
     document.getElementById(from).className = "startTransparent";
@@ -773,6 +803,7 @@ Board.prototype.runShoppingPath = function() {
   this.toggleButtons();
   runLeg(0);
 };
+
 
 
 
@@ -910,14 +941,19 @@ Board.prototype.resetBoard = function() {
 };
 
 Board.prototype.saveStoreToServer = function() {
-  const route = this.lastRoute && this.lastRoute.path ? this.lastRoute : {
-    start: this.start,
-    end: this.target,
-    stops: this.products.slice(),
-    segments: [],
-    path: []
-  };
+  const r = (this.lastRoute && Array.isArray(this.lastRoute.path) && this.lastRoute.path.length)
+    ? this.lastRoute
+    : {
+        start: this.start,
+        end: this.target,
+        stops: this.products.slice(),
+        segments: [],
+        path: [],
+        segmentDummyAdjacent: [],
+        dummyAdjacent: []
+      };
 
+  const asArr = v => Array.isArray(v) ? v.slice() : [];
   const payload = {
     meta: {
       height: this.height,
@@ -926,27 +962,33 @@ Board.prototype.saveStoreToServer = function() {
       savedAt: new Date().toISOString()
     },
     route: {
-      start: route.start,
-      end: route.end,
-      stops: route.stops,
-      segments: route.segments,  // array of arrays of node ids per leg
-      path: route.path           // flattened ordered node ids for whole trip
+      start: r.start,
+      end: r.end,
+      stops: asArr(r.stops),
+      segments: asArr(r.segments),
+      path: asArr(r.path),
+      segmentDummyAdjacent: asArr(r.segmentDummyAdjacent),
+      dummyAdjacent: asArr(r.dummyAdjacent)
     }
   };
+
+  document.getElementById("algorithmDescriptor").innerHTML =
+    `Saving… dummies near path: ${payload.route.dummyAdjacent.length}`;
 
   fetch("/api/save-store", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
   })
-  .then(r => r.json())
-  .then(j => {
-    if (!j.success) throw new Error(j.message || "save failed");
-    document.getElementById("algorithmDescriptor").innerHTML = `Saved: ${j.filename}`;
-  })
-  .catch(err => {
-    document.getElementById("algorithmDescriptor").innerHTML = `Save error: ${err.message}`;
-  });
+    .then(res => res.json())
+    .then(j => {
+      if (!j.success) throw new Error(j.message || "save failed");
+      document.getElementById("algorithmDescriptor").innerHTML =
+        `Saved ${j.filename} — dummies: ${payload.route.dummyAdjacent.length}, segments: ${payload.route.segments.length}`;
+    })
+    .catch(err => {
+      document.getElementById("algorithmDescriptor").innerHTML = `Save error: ${err.message}`;
+    });
 };
 
 
