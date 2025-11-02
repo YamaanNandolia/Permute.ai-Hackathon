@@ -370,6 +370,9 @@ Board.prototype.initialise = function() {
 };
 
 Board.prototype.createGrid = function() {
+  this.initialStart = this.start;
+  this.initialTarget = this.target;
+
   let tableHTML = "";
   for (let r = 0; r < this.height; r++) {
     let currentArrayRow = [];
@@ -655,8 +658,39 @@ Board.prototype._animatePathNodes = function(pathNodes, onDone, type) {
   step(0);
 };
 
+Board.prototype.ensureButtonsOn = function() {
+  if (!this.buttonsOn) this.toggleButtons();
+};
+
+Board.prototype.updateClearButtons = function() {
+  if (this.algoDone) {
+    document.getElementById("startButtonClearBoard").style.display = "none";
+    document.getElementById("startButtonClearWalls").style.display = "none";
+    document.getElementById("startButtonClearPath").style.display = "none";
+    document.getElementById("startButtonClearProducts").style.display = "none";
+    document.getElementById("startButtonReset").style.display = "block";
+    document.getElementById("startButtonSaveStore").style.display = "block";
+  } else {
+    document.getElementById("startButtonClearBoard").style.display = "block";
+    document.getElementById("startButtonClearWalls").style.display = "block";
+    document.getElementById("startButtonClearPath").style.display = "block";
+    document.getElementById("startButtonClearProducts").style.display = "block";
+    document.getElementById("startButtonReset").style.display = "none";
+    document.getElementById("startButtonSaveStore").style.display = "none";
+  }
+};
+
+
+Board.prototype.setButtonsEnabled = function(on) {
+  if (on && !this.buttonsOn) this.toggleButtons();
+  if (!on && this.buttonsOn) this.toggleButtons();
+};
+
 Board.prototype.runShoppingPath = function() {
   if (this.multiTargetRunning) return;
+
+  const origStart = this.start;
+  const origTarget = this.target;
   
   const weightedAlgorithms = ["dijkstra", "CLA", "greedy", "astar"];
   const type = weightedAlgorithms.includes(this.currentAlgorithm) ? "weighted" : "unweighted";
@@ -677,10 +711,24 @@ Board.prototype.runShoppingPath = function() {
   const runLeg = (idx) => {
     if (idx >= legs.length) {
       this.multiTargetRunning = false;
-      const summary = ["Start: " + this.start].concat(sequence.map((p, i) => `P${i + 1}: ${p}`)).concat(["End: " + this.target]).join("  ->  ");
-      document.getElementById("algorithmDescriptor").innerHTML = `Shopping route (greedy): ${summary}`;
-      this.toggleButtons();
+      this.start = origStart;
+      this.target = origTarget;
+
+      const sEl = document.getElementById(this.start);
+      const tEl = document.getElementById(this.target);
+      if (sEl) sEl.className = "start";
+      if (tEl) tEl.className = "target";
+
+      const summary = ["Start: " + origStart]
+        .concat(sequence.map((p, i) => `P${i + 1}: ${p}`))
+        .concat(["End: " + origTarget]).join("  ->  ");
+      document.getElementById("algorithmDescriptor").innerHTML =
+        `Shopping route (greedy): ${summary}`;
+
       this.algoDone = true;
+      if (!this.buttonsOn) this.toggleButtons();
+      document.getElementById("startButtonReset").style.display = "block";
+      document.getElementById("startButtonSaveStore").style.display = "block";
       return;
     }
 
@@ -848,6 +896,55 @@ Board.prototype.redoAlgorithm = function() {
   this.instantAlgorithm();
 };
 
+Board.prototype.resetBoard = function() {
+  this.clearPath("clickedButton");
+  this.clearWalls();
+  this.clearProducts();
+  this.algoDone = false;
+  if (this.updateClearButtons) this.updateClearButtons();
+  document.getElementById("startButtonReset").style.display = "none";
+  document.getElementById("startButtonSaveStore").style.display = "none";
+};
+
+Board.prototype.saveStoreToServer = function() {
+  const walls = [];
+  const weights = [];
+  Object.keys(this.nodes).forEach(id => {
+    const n = this.nodes[id];
+    if (n.status === "wall") walls.push(id);
+    if (n.weight === 15) weights.push(id);
+  });
+
+  const payload = {
+    height: this.height,
+    width: this.width,
+    start: this.start,
+    target: this.target,
+    products: this.products.slice(),
+    dummyProducts: this.dummyProducts.slice(),
+    walls,
+    weights
+  };
+
+  fetch("/api/save-store", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  })
+  .then(r => r.json())
+  .then(j => {
+    if (!j.success) throw new Error(j.message || "save failed");
+    document.getElementById("algorithmDescriptor").innerHTML =
+      `Saved: ${j.filename}`;
+  })
+  .catch(err => {
+    document.getElementById("algorithmDescriptor").innerHTML =
+      `Save error: ${err.message}`;
+  });
+};
+
+
+
 Board.prototype.toggleButtons = function() {
   document.getElementById("refreshButton").onclick = () => {
     window.location.reload(true);
@@ -888,6 +985,12 @@ Board.prototype.toggleButtons = function() {
       document.getElementById("adjustSpeed").innerHTML = 'Speed: Slow<span class="caret"></span>';
     }
 
+    document.getElementById("startButtonReset").onclick = () => { this.resetBoard(); };
+    document.getElementById("startButtonSaveStore").onclick = () => { this.saveStoreToServer(); };
+
+    document.getElementById("startButtonReset").className = "navbar-inverse navbar-nav";
+    document.getElementById("startButtonSaveStore").className = "navbar-inverse navbar-nav";
+
     // Product controls
     document.getElementById("startButtonToggleProducts").onclick = () => {
       this.productMode = !this.productMode;
@@ -908,9 +1011,13 @@ Board.prototype.toggleButtons = function() {
     document.getElementById("startButtonRunShopping").onclick = () => {
       if (!this.products || this.products.length === 0) return;
       this.clearPath("clickedButton");
-      this.toggleButtons();
       this.runShoppingPath();
+
+      // if path ok -> reset button and save
+
+
     }
+
 
     // Maze generation - only random maze
     document.getElementById("startButtonCreateMazeOne").onclick = () => {
@@ -1017,6 +1124,7 @@ Board.prototype.toggleButtons = function() {
       }
     }
 
+
     // Enable all nav items
     document.getElementById("startButtonClearPath").className = "navbar-inverse navbar-nav";
     document.getElementById("startButtonClearWalls").className = "navbar-inverse navbar-nav";
@@ -1043,6 +1151,12 @@ Board.prototype.toggleButtons = function() {
     document.getElementById("adjustFast").onclick = null;
     document.getElementById("adjustAverage").onclick = null;
     document.getElementById("adjustSlow").onclick = null;
+
+    document.getElementById("startButtonReset").onclick = null;
+    document.getElementById("startButtonSaveStore").onclick = null;
+
+    document.getElementById("startButtonReset").className = "navbar-inverse navbar-nav disabledA";
+    document.getElementById("startButtonSaveStore").className = "navbar-inverse navbar-nav disabledA";
 
     document.getElementById("adjustFast").className = "navbar-inverse navbar-nav disabledA";
     document.getElementById("adjustAverage").className = "navbar-inverse navbar-nav disabledA";
