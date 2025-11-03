@@ -57,6 +57,7 @@ function Board(height, width) {
     created: null,
     description: ""
   };
+  this.randomizedShopperMode = false; // Toggle between optimal and randomized shopper
 }
 
 Board.prototype.initialise = function() {
@@ -388,8 +389,10 @@ Board.prototype._animatePathNodes = function(pathNodes, onDone, type) {
 Board.prototype.runShoppingPath = function() {
   if (this.multiTargetRunning) return;
   
-  const weightedAlgorithms = ["dijkstra", "CLA", "greedy", "astar"];
-  const type = weightedAlgorithms.includes(this.currentAlgorithm) ? "weighted" : "unweighted";
+  // Use randomized algorithm if randomized mode is on, otherwise use current algorithm (A*)
+  const algorithmToUse = this.randomizedShopperMode ? "randomized" : this.currentAlgorithm;
+  const weightedAlgorithms = ["dijkstra", "CLA", "greedy", "astar", "randomized"];
+  const type = weightedAlgorithms.includes(algorithmToUse) ? "weighted" : "unweighted";
 
   const products = this.products.slice();
   const sequence = this._computeGreedyOrder(this.start, products);
@@ -415,8 +418,9 @@ Board.prototype.runShoppingPath = function() {
   const runLeg = (idx) => {
     if (idx >= legs.length) {
       this.multiTargetRunning = false;
+      const shopper = this.randomizedShopperMode ? "randomized" : "optimal";
       const summary = ["Start: " + this.start].concat(sequence.map((p, i) => `P${i + 1}: ${p}`)).concat(["End: " + this.target]).join("  ->  ");
-      document.getElementById("algorithmDescriptor").innerHTML = `Shopping route (greedy): ${summary}`;
+      document.getElementById("algorithmDescriptor").innerHTML = `Shopping route (${shopper}): ${summary}`;
       this.algoDone = true;
       this.lastComputedPath = fullPath; // Store the path
       this.ensureButtonsOn();
@@ -433,9 +437,9 @@ Board.prototype.runShoppingPath = function() {
 
     let success = false;
     if (type === "weighted") {
-      success = weightedSearchAlgorithm(this.nodes, this.start, this.target, this.nodesToAnimate, this.boardArray, this.currentAlgorithm, this.currentHeuristic, this);
+      success = weightedSearchAlgorithm(this.nodes, this.start, this.target, this.nodesToAnimate, this.boardArray, algorithmToUse, this.currentHeuristic, this);
     } else {
-      success = unweightedSearchAlgorithm(this.nodes, this.start, this.target, this.nodesToAnimate, this.boardArray, this.currentAlgorithm, this);
+      success = unweightedSearchAlgorithm(this.nodes, this.start, this.target, this.nodesToAnimate, this.boardArray, algorithmToUse, this);
     }
     if (!success) {
       console.log("Leg failed from", from, "to", to);
@@ -969,6 +973,12 @@ Board.prototype.toggleButtons = function() {
       this.runShoppingPath();
     }
 
+    document.getElementById("startButtonToggleRandomized").onclick = () => {
+      this.randomizedShopperMode = !this.randomizedShopperMode;
+      document.getElementById("startButtonToggleRandomized").innerHTML =
+        `<a href="#">Shopper: ${this.randomizedShopperMode ? "Randomized" : "Optimal"}</a>`;
+    }
+
     // Maze generation - only random maze
     document.getElementById("startButtonCreateMazeOne").onclick = () => {
       this.clearWalls();
@@ -1046,6 +1056,7 @@ Board.prototype.toggleButtons = function() {
     document.getElementById("startButtonRunShopping").className = "navbar-inverse navbar-nav";
     document.getElementById("startButtonClearProducts").className = "navbar-inverse navbar-nav";
     document.getElementById("startButtonSaveStore").className = "navbar-inverse navbar-nav";
+    document.getElementById("startButtonToggleRandomized").className = "navbar-inverse navbar-nav";
     document.getElementById("actualStartButton").style.backgroundColor = "";
 
   } else {
@@ -1075,6 +1086,7 @@ Board.prototype.toggleButtons = function() {
     document.getElementById("startButtonRunShopping").className = "navbar-inverse navbar-nav disabledA";
     document.getElementById("startButtonClearProducts").className = "navbar-inverse navbar-nav disabledA";
     document.getElementById("startButtonCreateMazeOne").className = "navbar-inverse navbar-nav disabledA";
+    document.getElementById("startButtonToggleRandomized").className = "navbar-inverse navbar-nav disabledA";
 
     document.getElementById("actualStartButton").style.backgroundColor = "rgb(185, 15, 15)";
   }

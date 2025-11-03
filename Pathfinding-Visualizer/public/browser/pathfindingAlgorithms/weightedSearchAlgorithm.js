@@ -1,7 +1,9 @@
 const astar = require("./astar");
+const randomizedShopper = require("./randomizedShopper");
 
 function weightedSearchAlgorithm(nodes, start, target, nodesToAnimate, boardArray, name, heuristic, board) {
   if (name === "astar") return astar(nodes, start, target, nodesToAnimate, boardArray, name, heuristic, board)
+  if (name === "randomized") return randomizedShopper(nodes, start, target, nodesToAnimate, boardArray, name, heuristic, board)
   if (!start || !target || start === target) {
     return false;
   }
