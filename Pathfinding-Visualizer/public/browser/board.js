@@ -5,6 +5,7 @@ const mazeGenerationAnimations = require("./animations/mazeGenerationAnimations"
 const weightedSearchAlgorithm = require("./pathfindingAlgorithms/weightedSearchAlgorithm");
 const unweightedSearchAlgorithm = require("./pathfindingAlgorithms/unweightedSearchAlgorithm");
 const getDistance = require("./getDistance");
+const getHeatmapColor = require("./heatmapRenderer");
 
 function Board(height, width) {
   this.height = height;
@@ -32,6 +33,14 @@ function Board(height, width) {
   this.isObject = false;
   this.buttonsOn = false;
   this.speed = "fast";
+  // Heatmap configuration
+  this.heatmapConfig = {
+    maxThreshold: 75,
+    enabled: false,
+    visionConeWeight: 0.20,
+    directPathWeight: 0.15
+  };
+  this.visionCone = null;
   // Store-layout MVP extensions
   this.productMode = false;
   this.dummyProductMode = false;
@@ -57,6 +66,8 @@ Board.prototype.initialise = function() {
   this.currentAlgorithm = "astar";
   this.currentHeuristic = "poweredManhattanDistance";
   this.toggleButtons();
+  // Auto-enable heatmap
+  this.initializeHeatmap();
 };
 
 Board.prototype.createGrid = function() {
@@ -335,6 +346,35 @@ Board.prototype._animatePathNodes = function(pathNodes, onDone, type) {
     }
     const node = pathNodes[i];
     const el = document.getElementById(node.id);
+    
+    // Cast vision rays as the agent actually moves along the path
+    if (board.heatmapConfig && board.heatmapConfig.enabled && board.visionCone) {
+      // Calculate direction from previous node
+      const { Vec2 } = require("./visionCone");
+      let direction;
+      
+      if (i > 0) {
+        const prevNode = pathNodes[i - 1];
+        const [currR, currC] = node.id.split('-').map(Number);
+        const [prevR, prevC] = prevNode.id.split('-').map(Number);
+        const dx = currC - prevC;
+        const dy = currR - prevR;
+        const magnitude = Math.sqrt(dx * dx + dy * dy);
+        direction = magnitude === 0 ? new Vec2(1, 0) : new Vec2(dx / magnitude, dy / magnitude);
+      } else {
+        direction = new Vec2(1, 0); // Default right
+      }
+      
+      board.visionCone.direction = direction;
+      board.visionCone.castRays(board, node.id);
+      
+      // Increment path visit count for actual path nodes
+      node.pathVisitCount++;
+      node.totalVisitCount = (node.visionVisitCount * board.heatmapConfig.visionConeWeight) +
+                             (node.pathVisitCount * board.heatmapConfig.directPathWeight);
+      node.heatmapIntensity = Math.min(1, node.totalVisitCount / board.heatmapConfig.maxThreshold);
+    }
+    
     if (type === "unweighted") {
       el.className = "shortest-path-unweighted";
     } else {
@@ -393,9 +433,9 @@ Board.prototype.runShoppingPath = function() {
 
     let success = false;
     if (type === "weighted") {
-      success = weightedSearchAlgorithm(this.nodes, this.start, this.target, this.nodesToAnimate, this.boardArray, this.currentAlgorithm, this.currentHeuristic);
+      success = weightedSearchAlgorithm(this.nodes, this.start, this.target, this.nodesToAnimate, this.boardArray, this.currentAlgorithm, this.currentHeuristic, this);
     } else {
-      success = unweightedSearchAlgorithm(this.nodes, this.start, this.target, this.nodesToAnimate, this.boardArray, this.currentAlgorithm);
+      success = unweightedSearchAlgorithm(this.nodes, this.start, this.target, this.nodesToAnimate, this.boardArray, this.currentAlgorithm, this);
     }
     if (!success) {
       console.log("Leg failed from", from, "to", to);
@@ -422,6 +462,11 @@ Board.prototype.runShoppingPath = function() {
     document.getElementById(to).className = "visitedTargetNodeBlue";
 
     this._animatePathNodes(pathNodes, () => {
+      // Render heatmap after this leg completes
+      if (this.heatmapConfig && this.heatmapConfig.enabled) {
+        this.renderHeatmap();
+      }
+      
       if (this.products.includes(to)) {
         this.products = this.products.filter(id => id !== to);
       }
@@ -540,11 +585,11 @@ Board.prototype.clearNodeStatuses = function() {
 Board.prototype.instantAlgorithm = function() {
   let success;
   if (!this.numberOfObjects) {
-    success = weightedSearchAlgorithm(this.nodes, this.start, this.target, this.nodesToAnimate, this.boardArray, this.currentAlgorithm, this.currentHeuristic);
+    success = weightedSearchAlgorithm(this.nodes, this.start, this.target, this.nodesToAnimate, this.boardArray, this.currentAlgorithm, this.currentHeuristic, this);
     launchInstantAnimations(this, success, "weighted");
   } else {
     this.isObject = true;
-    success = weightedSearchAlgorithm(this.nodes, this.start, this.object, this.objectNodesToAnimate, this.boardArray, this.currentAlgorithm, this.currentHeuristic);
+    success = weightedSearchAlgorithm(this.nodes, this.start, this.object, this.objectNodesToAnimate, this.boardArray, this.currentAlgorithm, this.currentHeuristic, this);
     launchInstantAnimations(this, success, "weighted", "object", this.currentAlgorithm);
   }
   this.algoDone = true;
@@ -571,6 +616,17 @@ Board.prototype.addShortestPath = function(targetNode, startNode, type) {
   let nodes = [];
   while (currentNode.id !== startNode) {
     nodes.unshift(currentNode);
+    
+    // Add bonus to path visit count for final shortest path nodes
+    if (this.heatmapConfig && this.heatmapConfig.enabled) {
+      currentNode.pathVisitCount += 3; // Bonus for being on final path
+      
+      // Recalculate total visit count and intensity
+      currentNode.totalVisitCount = (currentNode.visionVisitCount * this.heatmapConfig.visionConeWeight) +
+                                     (currentNode.pathVisitCount * this.heatmapConfig.directPathWeight);
+      currentNode.heatmapIntensity = Math.min(1, currentNode.totalVisitCount / this.heatmapConfig.maxThreshold);
+    }
+    
     currentNode = this.nodes[currentNode.previousNode];
   }
   if (type === "object") {
@@ -782,6 +838,70 @@ Board.prototype.getShelfTier = function(nodeId, tier) {
     return this.shelfData[nodeId][tier];
   }
   return null;
+};
+
+Board.prototype.renderHeatmap = function() {
+  // Return early if heatmap is not enabled
+  if (!this.heatmapConfig.enabled) {
+    return;
+  }
+  
+  // Iterate through all nodes
+  Object.keys(this.nodes).forEach(id => {
+    const node = this.nodes[id];
+    const element = document.getElementById(id);
+    
+    if (!element) return;
+    
+    // Skip special nodes
+    const skipStatuses = ['start', 'target', 'wall', 'object', 'product', 'dummy-product'];
+    if (skipStatuses.includes(node.status)) {
+      return;
+    }
+    
+    // Only render if node has heatmap intensity
+    if (node.heatmapIntensity && node.heatmapIntensity > 0) {
+      const color = getHeatmapColor(node.heatmapIntensity);
+      element.style.backgroundColor = color;
+      element.classList.add('heatmap-node');
+    }
+  });
+};
+
+Board.prototype.clearHeatmapVisualization = function() {
+  // Iterate through all nodes
+  Object.keys(this.nodes).forEach(id => {
+    const node = this.nodes[id];
+    const element = document.getElementById(id);
+    
+    if (!element) return;
+    
+    // Reset background color
+    element.style.backgroundColor = '';
+    
+    // Remove heatmap class
+    element.classList.remove('heatmap-node');
+  });
+};
+
+Board.prototype.initializeHeatmap = function() {
+  const { VisionCone, Vec2 } = require("./visionCone");
+  
+  // Create a vision cone instance with default settings
+  // 90 degree cone, 10 unit range, facing right initially
+  this.visionCone = new VisionCone(90, 10, new Vec2(1, 0));
+  
+  // Enable heatmap
+  this.heatmapConfig.enabled = true;
+  
+  // Reset all node heatmap counters
+  Object.keys(this.nodes).forEach(id => {
+    const node = this.nodes[id];
+    node.visionVisitCount = 0;
+    node.pathVisitCount = 0;
+    node.totalVisitCount = 0;
+    node.heatmapIntensity = 0;
+  });
 };
 
 Board.prototype.toggleButtons = function() {

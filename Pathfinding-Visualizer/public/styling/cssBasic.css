@@ -614,6 +614,10 @@
   background-color:white
 }
 
+.heatmap-node {
+  transition: background-color 0.3s ease;
+}
+
 .borderlessWeight {
   background-image: url(weight.svg);
   background-position: center;

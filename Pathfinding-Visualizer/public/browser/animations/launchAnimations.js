@@ -20,9 +20,9 @@ function launchAnimations(board, success, type, object, algorithm, heuristic) {
 
             } else {
               if (type === "weighted") {
-                newSuccess = weightedSearchAlgorithm(board.nodes, board.object, board.target, board.nodesToAnimate, board.boardArray, algorithm, heuristic);
+                newSuccess = weightedSearchAlgorithm(board.nodes, board.object, board.target, board.nodesToAnimate, board.boardArray, algorithm, heuristic, board);
               } else {
-                newSuccess = unweightedSearchAlgorithm(board.nodes, board.object, board.target, board.nodesToAnimate, board.boardArray, algorithm);
+                newSuccess = unweightedSearchAlgorithm(board.nodes, board.object, board.target, board.nodesToAnimate, board.boardArray, algorithm, board);
               }
             }
             document.getElementById(board.object).className = "visitedObjectNode";
@@ -103,6 +103,11 @@ function launchAnimations(board, success, type, object, algorithm, heuristic) {
           previousHTMLNode.className = previousNode.weight === 15 ? "visited weight" : "visited";
         }
       }
+    }
+    
+    // Render heatmap after each animation step if enabled
+    if (board.heatmapConfig && board.heatmapConfig.enabled) {
+      board.renderHeatmap();
     }
   }
 

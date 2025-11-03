@@ -21,9 +21,9 @@ function launchAnimations(board, success, type, object, algorithm, heuristic) {
 
             } else {
               if (type === "weighted") {
-                newSuccess = weightedSearchAlgorithm(board.nodes, board.object, board.target, board.nodesToAnimate, board.boardArray, algorithm, heuristic);
+                newSuccess = weightedSearchAlgorithm(board.nodes, board.object, board.target, board.nodesToAnimate, board.boardArray, algorithm, heuristic, board);
               } else {
-                newSuccess = unweightedSearchAlgorithm(board.nodes, board.object, board.target, board.nodesToAnimate, board.boardArray, algorithm);
+                newSuccess = unweightedSearchAlgorithm(board.nodes, board.object, board.target, board.nodesToAnimate, board.boardArray, algorithm, board);
               }
             }
             document.getElementById(board.object).className = "visitedObjectNode";
@@ -32,7 +32,6 @@ function launchAnimations(board, success, type, object, algorithm, heuristic) {
           } else {
             console.log("Failure.");
             board.reset();
-            board.toggleButtons();
             return;
           }
         } else {
@@ -51,14 +50,13 @@ function launchAnimations(board, success, type, object, algorithm, heuristic) {
               board.drawShortestPathTimeout(board.target, board.start, type);
               board.objectShortestPathNodesToAnimate = [];
               board.shortestPathNodesToAnimate = [];
-              board.reset();
             }
             shortestNodes = board.objectShortestPathNodesToAnimate.concat(board.shortestPathNodesToAnimate);
+            shortestPathTimeout(0);
             return;
           } else {
             console.log("Failure.");
             board.reset();
-            board.toggleButtons();
             return;
           }
         }
@@ -107,6 +105,11 @@ function launchAnimations(board, success, type, object, algorithm, heuristic) {
         }
       }
     }
+    
+    // Render heatmap after each animation step if enabled
+    if (board.heatmapConfig && board.heatmapConfig.enabled) {
+      board.renderHeatmap();
+    }
   }
 
   function shortestPathTimeout(index) {
@@ -130,6 +133,7 @@ function launchAnimations(board, success, type, object, algorithm, heuristic) {
           shortestPathChange(board.nodes[board.target], shortestNodes[index - 1]);
           board.objectShortestPathNodesToAnimate = [];
           board.shortestPathNodesToAnimate = [];
+          board.complete();
           return;
         }
       } else if (index === 0) {
@@ -174,7 +178,7 @@ function launchAnimations(board, success, type, object, algorithm, heuristic) {
 
 module.exports = launchAnimations;
 
-},{"../pathfindingAlgorithms/unweightedSearchAlgorithm":8,"../pathfindingAlgorithms/weightedSearchAlgorithm":9}],2:[function(require,module,exports){
+},{"../pathfindingAlgorithms/unweightedSearchAlgorithm":9,"../pathfindingAlgorithms/weightedSearchAlgorithm":10}],2:[function(require,module,exports){
 const weightedSearchAlgorithm = require("../pathfindingAlgorithms/weightedSearchAlgorithm");
 const unweightedSearchAlgorithm = require("../pathfindingAlgorithms/unweightedSearchAlgorithm");
 
@@ -292,7 +296,7 @@ function launchInstantAnimations(board, success, type, object, algorithm, heuris
 
 module.exports = launchInstantAnimations;
 
-},{"../pathfindingAlgorithms/unweightedSearchAlgorithm":8,"../pathfindingAlgorithms/weightedSearchAlgorithm":9}],3:[function(require,module,exports){
+},{"../pathfindingAlgorithms/unweightedSearchAlgorithm":9,"../pathfindingAlgorithms/weightedSearchAlgorithm":10}],3:[function(require,module,exports){
 function mazeGenerationAnimations(board) {
   let nodes = board.wallsToAnimate.slice(0);
   let speed = board.speed === "fast" ?
@@ -323,6 +327,7 @@ const mazeGenerationAnimations = require("./animations/mazeGenerationAnimations"
 const weightedSearchAlgorithm = require("./pathfindingAlgorithms/weightedSearchAlgorithm");
 const unweightedSearchAlgorithm = require("./pathfindingAlgorithms/unweightedSearchAlgorithm");
 const getDistance = require("./getDistance");
+const getHeatmapColor = require("./heatmapRenderer");
 
 function Board(height, width) {
   this.height = height;
@@ -350,6 +355,14 @@ function Board(height, width) {
   this.isObject = false;
   this.buttonsOn = false;
   this.speed = "fast";
+  // Heatmap configuration
+  this.heatmapConfig = {
+    maxThreshold: 75,
+    enabled: false,
+    visionConeWeight: 0.20,
+    directPathWeight: 0.15
+  };
+  this.visionCone = null;
   // Store-layout MVP extensions
   this.productMode = false;
   this.dummyProductMode = false;
@@ -358,6 +371,14 @@ function Board(height, width) {
   this.productDragAction = null;
   this.dragAction = null;
   this.multiTargetRunning = false;
+  // Store layout data
+  this.shelfData = {}; // Stores shelf tier information for each product node
+  this.lastComputedPath = null; // Stores the last A* path computed
+  this.storeMetadata = {
+    name: "",
+    created: null,
+    description: ""
+  };
 }
 
 Board.prototype.initialise = function() {
@@ -367,12 +388,11 @@ Board.prototype.initialise = function() {
   this.currentAlgorithm = "astar";
   this.currentHeuristic = "poweredManhattanDistance";
   this.toggleButtons();
+  // Auto-enable heatmap
+  this.initializeHeatmap();
 };
 
 Board.prototype.createGrid = function() {
-  this.initialStart = this.start;
-  this.initialTarget = this.target;
-
   let tableHTML = "";
   for (let r = 0; r < this.height; r++) {
     let currentArrayRow = [];
@@ -648,6 +668,35 @@ Board.prototype._animatePathNodes = function(pathNodes, onDone, type) {
     }
     const node = pathNodes[i];
     const el = document.getElementById(node.id);
+    
+    // Cast vision rays as the agent actually moves along the path
+    if (board.heatmapConfig && board.heatmapConfig.enabled && board.visionCone) {
+      // Calculate direction from previous node
+      const { Vec2 } = require("./visionCone");
+      let direction;
+      
+      if (i > 0) {
+        const prevNode = pathNodes[i - 1];
+        const [currR, currC] = node.id.split('-').map(Number);
+        const [prevR, prevC] = prevNode.id.split('-').map(Number);
+        const dx = currC - prevC;
+        const dy = currR - prevR;
+        const magnitude = Math.sqrt(dx * dx + dy * dy);
+        direction = magnitude === 0 ? new Vec2(1, 0) : new Vec2(dx / magnitude, dy / magnitude);
+      } else {
+        direction = new Vec2(1, 0); // Default right
+      }
+      
+      board.visionCone.direction = direction;
+      board.visionCone.castRays(board, node.id);
+      
+      // Increment path visit count for actual path nodes
+      node.pathVisitCount++;
+      node.totalVisitCount = (node.visionVisitCount * board.heatmapConfig.visionConeWeight) +
+                             (node.pathVisitCount * board.heatmapConfig.directPathWeight);
+      node.heatmapIntensity = Math.min(1, node.totalVisitCount / board.heatmapConfig.maxThreshold);
+    }
+    
     if (type === "unweighted") {
       el.className = "shortest-path-unweighted";
     } else {
@@ -658,97 +707,42 @@ Board.prototype._animatePathNodes = function(pathNodes, onDone, type) {
   step(0);
 };
 
-Board.prototype.ensureButtonsOn = function() {
-  if (!this.buttonsOn) this.toggleButtons();
-};
-
-Board.prototype.updateClearButtons = function() {
-  if (this.algoDone) {
-    document.getElementById("startButtonClearBoard").style.display = "none";
-    document.getElementById("startButtonClearWalls").style.display = "none";
-    document.getElementById("startButtonClearPath").style.display = "none";
-    document.getElementById("startButtonClearProducts").style.display = "none";
-    document.getElementById("startButtonReset").style.display = "block";
-    document.getElementById("startButtonSaveStore").style.display = "block";
-  } else {
-    document.getElementById("startButtonClearBoard").style.display = "block";
-    document.getElementById("startButtonClearWalls").style.display = "block";
-    document.getElementById("startButtonClearPath").style.display = "block";
-    document.getElementById("startButtonClearProducts").style.display = "block";
-    document.getElementById("startButtonReset").style.display = "none";
-    document.getElementById("startButtonSaveStore").style.display = "none";
-  }
-};
-
-Board.prototype._neighbors4 = function(id){
-  const [x,y] = id.split("-").map(Number);
-  const n = [];
-  if (this.boardArray[x-1] && this.boardArray[x-1][y]) n.push(`${x-1}-${y}`);
-  if (this.boardArray[x+1] && this.boardArray[x+1][y]) n.push(`${x+1}-${y}`);
-  if (this.boardArray[x] && this.boardArray[x][y-1]) n.push(`${x}-${y-1}`);
-  if (this.boardArray[x] && this.boardArray[x][y+1]) n.push(`${x}-${y+1}`);
-  return n;
-};
-
-
-
-Board.prototype.setButtonsEnabled = function(on) {
-  if (on && !this.buttonsOn) this.toggleButtons();
-  if (!on && this.buttonsOn) this.toggleButtons();
-};
-
 Board.prototype.runShoppingPath = function() {
   if (this.multiTargetRunning) return;
+  
+  const weightedAlgorithms = ["dijkstra", "CLA", "greedy", "astar"];
+  const type = weightedAlgorithms.includes(this.currentAlgorithm) ? "weighted" : "unweighted";
 
-  const origStart = this.start;
-  const origTarget = this.target;
-
-  const weighted = ["dijkstra","CLA","greedy","astar"].includes(this.currentAlgorithm);
-  const type = weighted ? "weighted" : "unweighted";
-
-  const sequence = this._computeGreedyOrder(this.start, this.products.slice());
+  const products = this.products.slice();
+  const sequence = this._computeGreedyOrder(this.start, products);
   const stops = sequence.concat([this.target]);
 
   const legs = [];
   let from = this.start;
-  for (const to of stops) { legs.push({ from, to }); from = to; }
+  for (const to of stops) {
+    legs.push({ from, to });
+    from = to;
+  }
 
   this.multiTargetRunning = true;
-
-  this._routeCapture = {
+  
+  // Store the full path for export
+  const fullPath = {
     start: this.start,
-    end: this.target,
-    stops: sequence.slice(),
-    segments: [],
-    path: [],
-    segmentDummyAdjacent: [],
-    dummyAdjacent: [],
-    _dummySet: new Set(this.dummyProducts.slice())
+    productSequence: sequence,
+    target: this.target,
+    legs: []
   };
 
   const runLeg = (idx) => {
     if (idx >= legs.length) {
       this.multiTargetRunning = false;
-      this.start = origStart;
-      this.target = origTarget;
-
-      const sEl = document.getElementById(this.start);
-      const tEl = document.getElementById(this.target);
-      if (sEl) sEl.className = "start";
-      if (tEl) tEl.className = "target";
-
-      const summary = ["Start: " + origStart]
-        .concat(sequence.map((p,i)=>`P${i+1}: ${p}`))
-        .concat(["End: " + origTarget]).join("  ->  ");
-      document.getElementById("algorithmDescriptor").innerHTML =
-        `Shopping route (greedy): ${summary}`;
-
+      const summary = ["Start: " + this.start].concat(sequence.map((p, i) => `P${i + 1}: ${p}`)).concat(["End: " + this.target]).join("  ->  ");
+      document.getElementById("algorithmDescriptor").innerHTML = `Shopping route (greedy): ${summary}`;
       this.algoDone = true;
-      if (!this.buttonsOn) this.toggleButtons();
-      document.getElementById("startButtonReset").style.display = "block";
-      document.getElementById("startButtonSaveStore").style.display = "block";
-
-      this.lastRoute = this._routeCapture;
+      this.lastComputedPath = fullPath; // Store the path
+      this.ensureButtonsOn();
+      this.updateClearButtons();
       return;
     }
 
@@ -759,53 +753,51 @@ Board.prototype.runShoppingPath = function() {
     this.target = to;
     this.nodesToAnimate = [];
 
-    const success = weighted
-      ? weightedSearchAlgorithm(this.nodes, this.start, this.target, this.nodesToAnimate, this.boardArray, this.currentAlgorithm, this.currentHeuristic)
-      : unweightedSearchAlgorithm(this.nodes, this.start, this.target, this.nodesToAnimate, this.boardArray, this.currentAlgorithm);
+    let success = false;
+    if (type === "weighted") {
+      success = weightedSearchAlgorithm(this.nodes, this.start, this.target, this.nodesToAnimate, this.boardArray, this.currentAlgorithm, this.currentHeuristic, this);
+    } else {
+      success = unweightedSearchAlgorithm(this.nodes, this.start, this.target, this.nodesToAnimate, this.boardArray, this.currentAlgorithm, this);
+    }
     if (!success) {
+      console.log("Leg failed from", from, "to", to);
       this.multiTargetRunning = false;
       this.toggleButtons();
       return;
     }
 
-    const pathNodes = [];
+    let pathNodes = [];
     let cur = this.nodes[this.nodes[to].previousNode];
-    while (cur && cur.id !== from) { pathNodes.unshift(cur); cur = this.nodes[cur.previousNode]; }
-
-    const seg = [from].concat(pathNodes.map(n => n.id)).concat([to]);
-    this._routeCapture.segments.push(seg);
-    this._routeCapture.path = this._routeCapture.path.length ? this._routeCapture.path.concat(seg.slice(1)) : seg.slice();
-
-    {
-      const seen = new Set();
-      const nearDummy = [];
-      for (const nid of seg) {
-        for (const nb of this._neighbors4(nid)) {
-          if (this._routeCapture._dummySet.has(nb) && !seen.has(nb)) {
-            seen.add(nb);
-            nearDummy.push(nb);
-          }
-        }
-      }
-      this._routeCapture.segmentDummyAdjacent.push(nearDummy);
-      for (const d of nearDummy) if (!this._routeCapture.dummyAdjacent.includes(d)) this._routeCapture.dummyAdjacent.push(d);
+    while (cur && cur.id !== from) {
+      pathNodes.unshift(cur);
+      cur = this.nodes[cur.previousNode];
     }
-
+    
+    // Record this leg in the full path
+    fullPath.legs.push({
+      from: from,
+      to: to,
+      pathNodes: pathNodes.map(n => n.id)
+    });
+    
     document.getElementById(from).className = "startTransparent";
     document.getElementById(to).className = "visitedTargetNodeBlue";
 
     this._animatePathNodes(pathNodes, () => {
-      if (this.products.includes(to)) this.products = this.products.filter(id => id !== to);
+      // Render heatmap after this leg completes
+      if (this.heatmapConfig && this.heatmapConfig.enabled) {
+        this.renderHeatmap();
+      }
+      
+      if (this.products.includes(to)) {
+        this.products = this.products.filter(id => id !== to);
+      }
       runLeg(idx + 1);
     }, type);
   };
 
-  this.toggleButtons();
   runLeg(0);
 };
-
-
-
 
 Board.prototype.createMazeOne = function(type) {
   Object.keys(this.nodes).forEach(node => {
@@ -915,11 +907,11 @@ Board.prototype.clearNodeStatuses = function() {
 Board.prototype.instantAlgorithm = function() {
   let success;
   if (!this.numberOfObjects) {
-    success = weightedSearchAlgorithm(this.nodes, this.start, this.target, this.nodesToAnimate, this.boardArray, this.currentAlgorithm, this.currentHeuristic);
+    success = weightedSearchAlgorithm(this.nodes, this.start, this.target, this.nodesToAnimate, this.boardArray, this.currentAlgorithm, this.currentHeuristic, this);
     launchInstantAnimations(this, success, "weighted");
   } else {
     this.isObject = true;
-    success = weightedSearchAlgorithm(this.nodes, this.start, this.object, this.objectNodesToAnimate, this.boardArray, this.currentAlgorithm, this.currentHeuristic);
+    success = weightedSearchAlgorithm(this.nodes, this.start, this.object, this.objectNodesToAnimate, this.boardArray, this.currentAlgorithm, this.currentHeuristic, this);
     launchInstantAnimations(this, success, "weighted", "object", this.currentAlgorithm);
   }
   this.algoDone = true;
@@ -930,69 +922,309 @@ Board.prototype.redoAlgorithm = function() {
   this.instantAlgorithm();
 };
 
-Board.prototype.resetBoard = function() {
-  this.clearPath("clickedButton");
-  this.clearWalls();
-  this.clearProducts();
-  this.algoDone = false;
-  if (this.updateClearButtons) this.updateClearButtons();
-  document.getElementById("startButtonReset").style.display = "none";
-  document.getElementById("startButtonSaveStore").style.display = "none";
+Board.prototype.reset = function(objectNotTransparent) {
+  // Ensure controls are enabled after animations complete
+  this.ensureButtonsOn();
 };
 
-Board.prototype.saveStoreToServer = function() {
-  const r = (this.lastRoute && Array.isArray(this.lastRoute.path) && this.lastRoute.path.length)
-    ? this.lastRoute
-    : {
-        start: this.start,
-        end: this.target,
-        stops: this.products.slice(),
-        segments: [],
-        path: [],
-        segmentDummyAdjacent: [],
-        dummyAdjacent: []
-      };
+Board.prototype.complete = function() {
+  this.algoDone = true;
+  this.ensureButtonsOn();
+  this.updateClearButtons();
+}
 
-  const asArr = v => Array.isArray(v) ? v.slice() : [];
-  const payload = {
-    meta: {
-      height: this.height,
-      width: this.width,
-      algorithm: this.currentAlgorithm || "astar",
-      savedAt: new Date().toISOString()
+Board.prototype.addShortestPath = function(targetNode, startNode, type) {
+  let currentNode = this.nodes[targetNode];
+  let nodes = [];
+  while (currentNode.id !== startNode) {
+    nodes.unshift(currentNode);
+    
+    // Add bonus to path visit count for final shortest path nodes
+    if (this.heatmapConfig && this.heatmapConfig.enabled) {
+      currentNode.pathVisitCount += 3; // Bonus for being on final path
+      
+      // Recalculate total visit count and intensity
+      currentNode.totalVisitCount = (currentNode.visionVisitCount * this.heatmapConfig.visionConeWeight) +
+                                     (currentNode.pathVisitCount * this.heatmapConfig.directPathWeight);
+      currentNode.heatmapIntensity = Math.min(1, currentNode.totalVisitCount / this.heatmapConfig.maxThreshold);
+    }
+    
+    currentNode = this.nodes[currentNode.previousNode];
+  }
+  if (type === "object") {
+    this.objectShortestPathNodesToAnimate = nodes;
+  } else {
+    this.shortestPathNodesToAnimate = nodes;
+  }
+};
+
+Board.prototype.drawShortestPathTimeout = function(targetNode, startNode, type, objectType) {
+  let currentNode = this.nodes[targetNode];
+  let nodes = [];
+  while (currentNode.id !== startNode) {
+    nodes.unshift(currentNode);
+    currentNode = this.nodes[currentNode.previousNode];
+  }
+  if (objectType === "object") {
+    this.objectShortestPathNodesToAnimate = nodes;
+  } else {
+    this.shortestPathNodesToAnimate = nodes;
+  }
+};
+
+Board.prototype.ensureButtonsOn = function() {
+  if (!this.buttonsOn) {
+    this.toggleButtons();
+  }
+};
+
+Board.prototype.updateClearButtons = function() {
+  if (this.algoDone) {
+    // Hide clear buttons that start with "clear"
+    document.getElementById("startButtonClearBoard").style.display = "none";
+    document.getElementById("startButtonClearWalls").style.display = "none";
+    document.getElementById("startButtonClearPath").style.display = "none";
+    document.getElementById("startButtonClearProducts").style.display = "none";
+    // Show Reset and Save Store buttons
+    document.getElementById("startButtonReset").style.display = "block";
+    document.getElementById("startButtonSaveStore").style.display = "block";
+  } else {
+    // Show clear buttons
+    document.getElementById("startButtonClearBoard").style.display = "block";
+    document.getElementById("startButtonClearWalls").style.display = "block";
+    document.getElementById("startButtonClearPath").style.display = "block";
+    document.getElementById("startButtonClearProducts").style.display = "block";
+    // Hide Reset and Save Store buttons
+    document.getElementById("startButtonReset").style.display = "none";
+    document.getElementById("startButtonSaveStore").style.display = "none";
+  }
+};
+
+Board.prototype.clearBoard = function() {
+  document.getElementById("startButtonAddObject").innerHTML = '<a href="#">Add Bomb</a></li>';
+
+  let navbarHeight = document.getElementById("navbarDiv").clientHeight;
+  let textHeight = document.getElementById("mainText").clientHeight + document.getElementById("algorithmDescriptor").clientHeight;
+  let height = Math.floor((document.documentElement.clientHeight - navbarHeight - textHeight) / 28);
+  let width = Math.floor(document.documentElement.clientWidth / 25);
+  let start = Math.floor(height / 2).toString() + "-" + Math.floor(width / 4).toString();
+  let target = Math.floor(height / 2).toString() + "-" + Math.floor(3 * width / 4).toString();
+
+  Object.keys(this.nodes).forEach(id => {
+    let currentNode = this.nodes[id];
+    let currentHTMLNode = document.getElementById(id);
+    if (id === start) {
+      currentHTMLNode.className = "start";
+      currentNode.status = "start";
+    } else if (id === target) {
+      currentHTMLNode.className = "target";
+      currentNode.status = "target"
+    } else {
+      currentHTMLNode.className = "unvisited";
+      currentNode.status = "unvisited";
+    }
+    currentNode.previousNode = null;
+    currentNode.path = null;
+    currentNode.direction = null;
+    currentNode.storedDirection = null;
+    currentNode.distance = Infinity;
+    currentNode.totalDistance = Infinity;
+    currentNode.heuristicDistance = null;
+    currentNode.weight = 0;
+    currentNode.relatesToObject = false;
+    currentNode.overwriteObjectRelation = false;
+  });
+  this.start = start;
+  this.target = target;
+  this.object = null;
+  this.nodesToAnimate = [];
+  this.objectNodesToAnimate = [];
+  this.shortestPathNodesToAnimate = [];
+  this.objectShortestPathNodesToAnimate = [];
+  this.wallsToAnimate = [];
+  this.mouseDown = false;
+  this.pressedNodeStatus = "normal";
+  this.previouslyPressedNodeStatus = null;
+  this.previouslySwitchedNode = null;
+  this.previouslySwitchedNodeWeight = 0;
+  this.keyDown = false;
+  this.algoDone = false;
+  this.numberOfObjects = 0;
+  this.isObject = false;
+  this.clearProducts();
+  this.products = [];
+  this.dummyProducts = [];
+  this.productMode = false;
+  this.dummyProductMode = false;
+  document.getElementById("startButtonToggleProducts").innerHTML = '<a href="#">Products: Off</a>';
+  document.getElementById("startButtonToggleDummy").innerHTML = '<a href="#">Dummy Mode: Off</a>';
+  this.updateClearButtons();
+};
+
+Board.prototype.exportStoreData = function() {
+  // Create a matrix representation of the board
+  const matrix = [];
+  for (let r = 0; r < this.height; r++) {
+    const row = [];
+    for (let c = 0; c < this.width; c++) {
+      const node = this.boardArray[r][c];
+      let cellValue = 0; // 0 = unvisited/empty
+      
+      if (node.status === "wall") cellValue = 1; // wall
+      else if (node.status === "product") cellValue = 2; // product (yellow/target)
+      else if (node.status === "dummy-product") cellValue = 3; // dummy product (red/obstacle)
+      else if (node.status === "start") cellValue = 4; // start
+      else if (node.status === "target") cellValue = 5; // target
+      else if (node.weight === 15) cellValue = 6; // weighted node
+      
+      row.push(cellValue);
+    }
+    matrix.push(row);
+  }
+  
+  // Create the complete store data structure
+  const storeData = {
+    metadata: {
+      name: this.storeMetadata.name || `Store_${new Date().toISOString()}`,
+      created: new Date().toISOString(),
+      description: this.storeMetadata.description || "Auto-generated store layout",
+      dimensions: {
+        height: this.height,
+        width: this.width
+      }
     },
-    route: {
-      start: r.start,
-      end: r.end,
-      stops: asArr(r.stops),
-      segments: asArr(r.segments),
-      path: asArr(r.path),
-      segmentDummyAdjacent: asArr(r.segmentDummyAdjacent),
-      dummyAdjacent: asArr(r.dummyAdjacent)
+    layout: {
+      matrix: matrix,
+      start: this.start,
+      target: this.target,
+      products: this.products.slice(),
+      dummyProducts: this.dummyProducts.slice(),
+      walls: Object.keys(this.nodes).filter(id => this.nodes[id].status === "wall")
+    },
+    shelfData: this.shelfData, // Shelf tier information for each product
+    path: this.lastComputedPath, // The A* computed path
+    algorithm: {
+      name: this.currentAlgorithm,
+      heuristic: this.currentHeuristic
     }
   };
-
-  document.getElementById("algorithmDescriptor").innerHTML =
-    `Saving… dummies near path: ${payload.route.dummyAdjacent.length}`;
-
-  fetch("/api/save-store", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
-  })
-    .then(res => res.json())
-    .then(j => {
-      if (!j.success) throw new Error(j.message || "save failed");
-      document.getElementById("algorithmDescriptor").innerHTML =
-        `Saved ${j.filename} — dummies: ${payload.route.dummyAdjacent.length}, segments: ${payload.route.segments.length}`;
-    })
-    .catch(err => {
-      document.getElementById("algorithmDescriptor").innerHTML = `Save error: ${err.message}`;
-    });
+  
+  return storeData;
 };
 
+Board.prototype.saveStoreToServer = async function() {
+  const storeData = this.exportStoreData();
+  
+  try {
+    const response = await fetch('/api/save-store', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(storeData)
+    });
+    
+    const result = await response.json();
+    
+    if (result.success) {
+      alert(`Store saved successfully!\nFile: ${result.filename}\nPath: ${result.path}`);
+      console.log("Store data saved:", result);
+    } else {
+      alert(`Failed to save store: ${result.message}`);
+      console.error("Save failed:", result);
+    }
+    
+    return result;
+  } catch (error) {
+    alert(`Error saving store: ${error.message}`);
+    console.error("Error saving store:", error);
+    return { success: false, error: error.message };
+  }
+};
 
+Board.prototype.setShelfTier = function(nodeId, tier, productInfo) {
+  // tier: 'lower', 'middle', 'higher'
+  // productInfo: { name, barcode, price, etc. }
+  if (!this.shelfData[nodeId]) {
+    this.shelfData[nodeId] = {
+      lower: null,
+      middle: null,
+      higher: null
+    };
+  }
+  this.shelfData[nodeId][tier] = productInfo;
+};
 
+Board.prototype.getShelfTier = function(nodeId, tier) {
+  if (this.shelfData[nodeId]) {
+    return this.shelfData[nodeId][tier];
+  }
+  return null;
+};
+
+Board.prototype.renderHeatmap = function() {
+  // Return early if heatmap is not enabled
+  if (!this.heatmapConfig.enabled) {
+    return;
+  }
+  
+  // Iterate through all nodes
+  Object.keys(this.nodes).forEach(id => {
+    const node = this.nodes[id];
+    const element = document.getElementById(id);
+    
+    if (!element) return;
+    
+    // Skip special nodes
+    const skipStatuses = ['start', 'target', 'wall', 'object', 'product', 'dummy-product'];
+    if (skipStatuses.includes(node.status)) {
+      return;
+    }
+    
+    // Only render if node has heatmap intensity
+    if (node.heatmapIntensity && node.heatmapIntensity > 0) {
+      const color = getHeatmapColor(node.heatmapIntensity);
+      element.style.backgroundColor = color;
+      element.classList.add('heatmap-node');
+    }
+  });
+};
+
+Board.prototype.clearHeatmapVisualization = function() {
+  // Iterate through all nodes
+  Object.keys(this.nodes).forEach(id => {
+    const node = this.nodes[id];
+    const element = document.getElementById(id);
+    
+    if (!element) return;
+    
+    // Reset background color
+    element.style.backgroundColor = '';
+    
+    // Remove heatmap class
+    element.classList.remove('heatmap-node');
+  });
+};
+
+Board.prototype.initializeHeatmap = function() {
+  const { VisionCone, Vec2 } = require("./visionCone");
+  
+  // Create a vision cone instance with default settings
+  // 90 degree cone, 10 unit range, facing right initially
+  this.visionCone = new VisionCone(90, 10, new Vec2(1, 0));
+  
+  // Enable heatmap
+  this.heatmapConfig.enabled = true;
+  
+  // Reset all node heatmap counters
+  Object.keys(this.nodes).forEach(id => {
+    const node = this.nodes[id];
+    node.visionVisitCount = 0;
+    node.pathVisitCount = 0;
+    node.totalVisitCount = 0;
+    node.heatmapIntensity = 0;
+  });
+};
 
 Board.prototype.toggleButtons = function() {
   document.getElementById("refreshButton").onclick = () => {
@@ -1001,6 +1233,7 @@ Board.prototype.toggleButtons = function() {
 
   if (!this.buttonsOn) {
     this.buttonsOn = true;
+    this.updateClearButtons();
 
     // Visualize button - always uses A*
     document.getElementById("startButtonStart").onclick = () => {
@@ -1034,12 +1267,6 @@ Board.prototype.toggleButtons = function() {
       document.getElementById("adjustSpeed").innerHTML = 'Speed: Slow<span class="caret"></span>';
     }
 
-    document.getElementById("startButtonReset").onclick = () => { this.resetBoard(); };
-    document.getElementById("startButtonSaveStore").onclick = () => { this.saveStoreToServer(); };
-
-    document.getElementById("startButtonReset").className = "navbar-inverse navbar-nav";
-    document.getElementById("startButtonSaveStore").className = "navbar-inverse navbar-nav";
-
     // Product controls
     document.getElementById("startButtonToggleProducts").onclick = () => {
       this.productMode = !this.productMode;
@@ -1060,13 +1287,9 @@ Board.prototype.toggleButtons = function() {
     document.getElementById("startButtonRunShopping").onclick = () => {
       if (!this.products || this.products.length === 0) return;
       this.clearPath("clickedButton");
+      this.toggleButtons();
       this.runShoppingPath();
-
-      // if path ok -> reset button and save
-
-
     }
-
 
     // Maze generation - only random maze
     document.getElementById("startButtonCreateMazeOne").onclick = () => {
@@ -1076,71 +1299,28 @@ Board.prototype.toggleButtons = function() {
     }
 
     // Clear controls
-    document.getElementById("startButtonClearBoard").onclick = () => {
-      document.getElementById("startButtonAddObject").innerHTML = '<a href="#">Add Bomb</a></li>';
-
-      let navbarHeight = document.getElementById("navbarDiv").clientHeight;
-      let textHeight = document.getElementById("mainText").clientHeight + document.getElementById("algorithmDescriptor").clientHeight;
-      let height = Math.floor((document.documentElement.clientHeight - navbarHeight - textHeight) / 28);
-      let width = Math.floor(document.documentElement.clientWidth / 25);
-      let start = Math.floor(height / 2).toString() + "-" + Math.floor(width / 4).toString();
-      let target = Math.floor(height / 2).toString() + "-" + Math.floor(3 * width / 4).toString();
-
-      Object.keys(this.nodes).forEach(id => {
-        let currentNode = this.nodes[id];
-        let currentHTMLNode = document.getElementById(id);
-        if (id === start) {
-          currentHTMLNode.className = "start";
-          currentNode.status = "start";
-        } else if (id === target) {
-          currentHTMLNode.className = "target";
-          currentNode.status = "target"
-        } else {
-          currentHTMLNode.className = "unvisited";
-          currentNode.status = "unvisited";
-        }
-        currentNode.previousNode = null;
-        currentNode.path = null;
-        currentNode.direction = null;
-        currentNode.storedDirection = null;
-        currentNode.distance = Infinity;
-        currentNode.totalDistance = Infinity;
-        currentNode.heuristicDistance = null;
-        currentNode.weight = 0;
-        currentNode.relatesToObject = false;
-        currentNode.overwriteObjectRelation = false;
-      });
-      this.start = start;
-      this.target = target;
-      this.object = null;
-      this.nodesToAnimate = [];
-      this.objectNodesToAnimate = [];
-      this.shortestPathNodesToAnimate = [];
-      this.objectShortestPathNodesToAnimate = [];
-      this.wallsToAnimate = [];
-      this.mouseDown = false;
-      this.pressedNodeStatus = "normal";
-      this.previouslyPressedNodeStatus = null;
-      this.previouslySwitchedNode = null;
-      this.previouslySwitchedNodeWeight = 0;
-      this.keyDown = false;
-      this.algoDone = false;
-      this.numberOfObjects = 0;
-      this.isObject = false;
-      this.clearProducts();
-      this.products = [];
-      this.dummyProducts = [];
-      this.productMode = false;
-      this.dummyProductMode = false;
-      document.getElementById("startButtonToggleProducts").innerHTML = '<a href="#">Products: Off</a>';
-      document.getElementById("startButtonToggleDummy").innerHTML = '<a href="#">Dummy Mode: Off</a>';
+    document.querySelector("#startButtonClearBoard a").onclick = (e) => {
+      e.preventDefault();
+      this.clearBoard();
     }
 
-    document.getElementById("startButtonClearWalls").onclick = () => {
+    document.querySelector("#startButtonReset a").onclick = (e) => {
+      e.preventDefault();
+      this.clearBoard();
+    }
+    
+    document.querySelector("#startButtonSaveStore a").onclick = (e) => {
+      e.preventDefault();
+      this.saveStoreToServer();
+    }
+
+    document.querySelector("#startButtonClearWalls a").onclick = (e) => {
+      e.preventDefault();
       this.clearWalls();
     }
 
-   document.getElementById("startButtonClearPath").onclick = () => {
+    document.querySelector("#startButtonClearPath a").onclick = (e) => {
+      e.preventDefault();
       this.clearPath("clickedButton");
     }
 
@@ -1173,11 +1353,11 @@ Board.prototype.toggleButtons = function() {
       }
     }
 
-
     // Enable all nav items
     document.getElementById("startButtonClearPath").className = "navbar-inverse navbar-nav";
     document.getElementById("startButtonClearWalls").className = "navbar-inverse navbar-nav";
     document.getElementById("startButtonClearBoard").className = "navbar-inverse navbar-nav";
+    document.getElementById("startButtonReset").className = "navbar-inverse navbar-nav";
     document.getElementById("startButtonAddObject").className = "navbar-inverse navbar-nav";
     document.getElementById("startButtonCreateMazeOne").className = "navbar-inverse navbar-nav";
     document.getElementById("adjustFast").className = "navbar-inverse navbar-nav";
@@ -1187,6 +1367,7 @@ Board.prototype.toggleButtons = function() {
     document.getElementById("startButtonToggleDummy").className = "navbar-inverse navbar-nav";
     document.getElementById("startButtonRunShopping").className = "navbar-inverse navbar-nav";
     document.getElementById("startButtonClearProducts").className = "navbar-inverse navbar-nav";
+    document.getElementById("startButtonSaveStore").className = "navbar-inverse navbar-nav";
     document.getElementById("actualStartButton").style.backgroundColor = "";
 
   } else {
@@ -1197,15 +1378,10 @@ Board.prototype.toggleButtons = function() {
     document.getElementById("startButtonClearWalls").onclick = null;
     document.getElementById("startButtonClearBoard").onclick = null;
     document.getElementById("startButtonStart").onclick = null;
+    document.getElementById("startButtonSaveStore").onclick = null;
     document.getElementById("adjustFast").onclick = null;
     document.getElementById("adjustAverage").onclick = null;
     document.getElementById("adjustSlow").onclick = null;
-
-    document.getElementById("startButtonReset").onclick = null;
-    document.getElementById("startButtonSaveStore").onclick = null;
-
-    document.getElementById("startButtonReset").className = "navbar-inverse navbar-nav disabledA";
-    document.getElementById("startButtonSaveStore").className = "navbar-inverse navbar-nav disabledA";
 
     document.getElementById("adjustFast").className = "navbar-inverse navbar-nav disabledA";
     document.getElementById("adjustAverage").className = "navbar-inverse navbar-nav disabledA";
@@ -1213,6 +1389,8 @@ Board.prototype.toggleButtons = function() {
     document.getElementById("startButtonClearPath").className = "navbar-inverse navbar-nav disabledA";
     document.getElementById("startButtonClearWalls").className = "navbar-inverse navbar-nav disabledA";
     document.getElementById("startButtonClearBoard").className = "navbar-inverse navbar-nav disabledA";
+    document.getElementById("startButtonReset").className = "navbar-inverse navbar-nav disabledA";
+    document.getElementById("startButtonSaveStore").className = "navbar-inverse navbar-nav disabledA";
     document.getElementById("startButtonAddObject").className = "navbar-inverse navbar-nav disabledA";
     document.getElementById("startButtonToggleProducts").className = "navbar-inverse navbar-nav disabledA";
     document.getElementById("startButtonToggleDummy").className = "navbar-inverse navbar-nav disabledA";
@@ -1239,7 +1417,7 @@ window.onkeyup = (e) => {
   newBoard.keyDown = false;
 }
 
-},{"./animations/launchAnimations":1,"./animations/launchInstantAnimations":2,"./animations/mazeGenerationAnimations":3,"./getDistance":5,"./node":6,"./pathfindingAlgorithms/unweightedSearchAlgorithm":8,"./pathfindingAlgorithms/weightedSearchAlgorithm":9}],5:[function(require,module,exports){
+},{"./animations/launchAnimations":1,"./animations/launchInstantAnimations":2,"./animations/mazeGenerationAnimations":3,"./getDistance":5,"./heatmapRenderer":6,"./node":7,"./pathfindingAlgorithms/unweightedSearchAlgorithm":9,"./pathfindingAlgorithms/weightedSearchAlgorithm":10,"./visionCone":11}],5:[function(require,module,exports){
 function getDistance(nodeOne, nodeTwo) {
   let currentCoordinates = nodeOne.id.split("-");
   let targetCoordinates = nodeTwo.id.split("-");
@@ -1294,6 +1472,68 @@ function getDistance(nodeOne, nodeTwo) {
 module.exports = getDistance;
 
 },{}],6:[function(require,module,exports){
+/**
+ * Heatmap color interpolation renderer
+ * Generates blue gradient colors based on visit intensity
+ */
+
+// Gradient stops for blue-to-purple heatmap
+const GRADIENT_STOPS = [
+  { intensity: 0.00, color: { r: 255, g: 255, b: 255 } }, // White
+  { intensity: 0.20, color: { r: 230, g: 242, b: 255 } }, // Very light blue
+  { intensity: 0.47, color: { r: 153, g: 204, b: 255 } }, // Light blue
+  { intensity: 0.73, color: { r: 102, g: 102, b: 255 } }, // Medium blue-purple
+  { intensity: 0.87, color: { r: 128, g: 0, b: 204 } },   // Purple
+  { intensity: 1.00, color: { r: 102, g: 0, b: 153 } }    // Dark purple (distinct from navy walls)
+];
+
+/**
+ * Linear interpolation between two values
+ * @param {number} a - Start value
+ * @param {number} b - End value
+ * @param {number} t - Interpolation factor (0-1)
+ * @returns {number} Interpolated value
+ */
+function lerp(a, b, t) {
+  return a + (b - a) * t;
+}
+
+/**
+ * Get heatmap color based on intensity value
+ * @param {number} intensity - Intensity value between 0 and 1
+ * @returns {string} RGB color string in format "rgb(r, g, b)"
+ */
+function getHeatmapColor(intensity) {
+  // Clamp intensity to valid range
+  intensity = Math.max(0, Math.min(1, intensity));
+  
+  // Find the two gradient stops to interpolate between
+  let lowerStop = GRADIENT_STOPS[0];
+  let upperStop = GRADIENT_STOPS[GRADIENT_STOPS.length - 1];
+  
+  for (let i = 0; i < GRADIENT_STOPS.length - 1; i++) {
+    if (intensity >= GRADIENT_STOPS[i].intensity && 
+        intensity <= GRADIENT_STOPS[i + 1].intensity) {
+      lowerStop = GRADIENT_STOPS[i];
+      upperStop = GRADIENT_STOPS[i + 1];
+      break;
+    }
+  }
+  
+  // Calculate interpolation factor
+  const range = upperStop.intensity - lowerStop.intensity;
+  const t = range === 0 ? 0 : (intensity - lowerStop.intensity) / range;
+  
+  // Interpolate RGB values
+  const r = Math.round(lerp(lowerStop.color.r, upperStop.color.r, t));
+  const g = Math.round(lerp(lowerStop.color.g, upperStop.color.g, t));
+  const b = Math.round(lerp(lowerStop.color.b, upperStop.color.b, t));
+  
+  return `rgb(${r}, ${g}, ${b})`;
+}
+
+module.exports = getHeatmapColor;
+},{}],7:[function(require,module,exports){
 function Node(id, status) {
   this.id = id;
   this.status = status;
@@ -1307,6 +1547,12 @@ function Node(id, status) {
   this.weight = 0;
   this.relatesToObject = false;
   this.overwriteObjectRelation = false;
+
+  // Heatmap tracking properties
+  this.visionVisitCount = 0;
+  this.pathVisitCount = 0;
+  this.totalVisitCount = 0;
+  this.heatmapIntensity = 0;
 
   this.otherid = id;
   this.otherstatus = status;
@@ -1322,8 +1568,8 @@ function Node(id, status) {
 
 module.exports = Node;
 
-},{}],7:[function(require,module,exports){
-function astar(nodes, start, target, nodesToAnimate, boardArray, name, heuristic) {
+},{}],8:[function(require,module,exports){
+function astar(nodes, start, target, nodesToAnimate, boardArray, name, heuristic, board) {
   if (!start || !target || start === target) {
     return false;
   }
@@ -1337,6 +1583,10 @@ function astar(nodes, start, target, nodesToAnimate, boardArray, name, heuristic
       currentNode = closestNode(nodes, unvisitedNodes)
     }
     if (currentNode.distance === Infinity) return false;
+    
+    // Don't cast vision during exploration - only during actual path traversal
+    // Vision will be cast in board._animatePathNodes() as the agent actually moves
+    
     nodesToAnimate.push(currentNode);
     currentNode.status = "visited";
     if (currentNode.id === target) {
@@ -1344,6 +1594,32 @@ function astar(nodes, start, target, nodesToAnimate, boardArray, name, heuristic
     }
     updateNeighbors(nodes, currentNode, boardArray, target, name, start, heuristic);
   }
+}
+
+// Helper function to calculate direction vector from node movement
+function calculateDirection(currentNode, nodes) {
+  const { Vec2 } = require("../visionCone");
+  
+  if (!currentNode.previousNode) {
+    // Default to right if no previous node
+    return new Vec2(1, 0);
+  }
+  
+  const prevNode = nodes[currentNode.previousNode];
+  const [currR, currC] = currentNode.id.split('-').map(Number);
+  const [prevR, prevC] = prevNode.id.split('-').map(Number);
+  
+  // Calculate direction vector
+  const dx = currC - prevC;
+  const dy = currR - prevR;
+  
+  // Normalize
+  const magnitude = Math.sqrt(dx * dx + dy * dy);
+  if (magnitude === 0) {
+    return new Vec2(1, 0); // Default to right
+  }
+  
+  return new Vec2(dx / magnitude, dy / magnitude);
 }
 
 function closestNode(nodes, unvisitedNodes) {
@@ -1610,8 +1886,8 @@ function manhattanDistance(nodeOne, nodeTwo) {
 
 module.exports = astar;
 
-},{}],8:[function(require,module,exports){
-function unweightedSearchAlgorithm(nodes, start, target, nodesToAnimate, boardArray, name) {
+},{"../visionCone":11}],9:[function(require,module,exports){
+function unweightedSearchAlgorithm(nodes, start, target, nodesToAnimate, boardArray, name, board) {
   if (!start || !target || start === target) {
     return false;
   }
@@ -1619,6 +1895,10 @@ function unweightedSearchAlgorithm(nodes, start, target, nodesToAnimate, boardAr
   let exploredNodes = {start: true};
   while (structure.length) {
     let currentNode = name === "bfs" ? structure.shift() : structure.pop();
+    
+    // Don't cast vision during exploration - only during actual path traversal
+    // Vision will be cast in board._animatePathNodes() as the agent actually moves
+    
     nodesToAnimate.push(currentNode);
     if (name === "dfs") exploredNodes[currentNode.id] = true;
     currentNode.status = "visited";
@@ -1635,6 +1915,32 @@ function unweightedSearchAlgorithm(nodes, start, target, nodesToAnimate, boardAr
     });
   }
   return false;
+}
+
+// Helper function to calculate direction vector from node movement
+function calculateDirection(currentNode, nodes) {
+  const { Vec2 } = require("../visionCone");
+  
+  if (!currentNode.previousNode) {
+    // Default to right if no previous node
+    return new Vec2(1, 0);
+  }
+  
+  const prevNode = nodes[currentNode.previousNode];
+  const [currR, currC] = currentNode.id.split('-').map(Number);
+  const [prevR, prevC] = prevNode.id.split('-').map(Number);
+  
+  // Calculate direction vector
+  const dx = currC - prevC;
+  const dy = currR - prevR;
+  
+  // Normalize
+  const magnitude = Math.sqrt(dx * dx + dy * dy);
+  if (magnitude === 0) {
+    return new Vec2(1, 0); // Default to right
+  }
+  
+  return new Vec2(dx / magnitude, dy / magnitude);
 }
 
 function getNeighbors(id, nodes, boardArray, name) {
@@ -1688,11 +1994,11 @@ function getNeighbors(id, nodes, boardArray, name) {
 
 module.exports = unweightedSearchAlgorithm;
 
-},{}],9:[function(require,module,exports){
+},{"../visionCone":11}],10:[function(require,module,exports){
 const astar = require("./astar");
 
-function weightedSearchAlgorithm(nodes, start, target, nodesToAnimate, boardArray, name, heuristic) {
-  if (name === "astar") return astar(nodes, start, target, nodesToAnimate, boardArray, name)
+function weightedSearchAlgorithm(nodes, start, target, nodesToAnimate, boardArray, name, heuristic, board) {
+  if (name === "astar") return astar(nodes, start, target, nodesToAnimate, boardArray, name, heuristic, board)
   if (!start || !target || start === target) {
     return false;
   }
@@ -1707,6 +2013,10 @@ function weightedSearchAlgorithm(nodes, start, target, nodesToAnimate, boardArra
     if (currentNode.distance === Infinity) {
       return false;
     }
+    
+    // Don't cast vision during exploration - only during actual path traversal
+    // Vision will be cast in board._animatePathNodes() as the agent actually moves
+    
     nodesToAnimate.push(currentNode);
     currentNode.status = "visited";
     if (currentNode.id === target) return "success!";
@@ -1716,6 +2026,32 @@ function weightedSearchAlgorithm(nodes, start, target, nodesToAnimate, boardArra
       updateNeighbors(nodes, currentNode, boardArray);
     }
   }
+}
+
+// Helper function to calculate direction vector from node movement
+function calculateDirection(currentNode, nodes) {
+  const { Vec2 } = require("../visionCone");
+  
+  if (!currentNode.previousNode) {
+    // Default to right if no previous node
+    return new Vec2(1, 0);
+  }
+  
+  const prevNode = nodes[currentNode.previousNode];
+  const [currR, currC] = currentNode.id.split('-').map(Number);
+  const [prevR, prevC] = prevNode.id.split('-').map(Number);
+  
+  // Calculate direction vector
+  const dx = currC - prevC;
+  const dy = currR - prevR;
+  
+  // Normalize
+  const magnitude = Math.sqrt(dx * dx + dy * dy);
+  if (magnitude === 0) {
+    return new Vec2(1, 0); // Default to right
+  }
+  
+  return new Vec2(dx / magnitude, dy / magnitude);
 }
 
 function closestNode(nodes, unvisitedNodes) {
@@ -2013,4 +2349,176 @@ function weightedManhattanDistance(nodeOne, nodeTwo, nodes) {
 
 module.exports = weightedSearchAlgorithm;
 
-},{"./astar":7}]},{},[4]);
+},{"../visionCone":11,"./astar":8}],11:[function(require,module,exports){
+// Vec2 class for 2D vectors
+class Vec2 {
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
+  }
+
+  // Add two vectors
+  add(other) {
+    return new Vec2(this.x + other.x, this.y + other.y);
+  }
+
+  // Subtract two vectors
+  sub(other) {
+    return new Vec2(this.x - other.x, this.y - other.y);
+  }
+
+  // Multiply by scalar
+  mul(scalar) {
+    return new Vec2(this.x * scalar, this.y * scalar);
+  }
+
+  // Dot product
+  dot(other) {
+    return this.x * other.x + this.y * other.y;
+  }
+
+  // Magnitude
+  mag() {
+    return Math.sqrt(this.x * this.x + this.y * this.y);
+  }
+
+  // Normalize
+  normalize() {
+    const m = this.mag();
+    if (m === 0) return new Vec2(0, 0);
+    return new Vec2(this.x / m, this.y / m);
+  }
+
+  // Rotate by angle in radians
+  rotate(angle) {
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    return new Vec2(
+      this.x * cos - this.y * sin,
+      this.x * sin + this.y * cos
+    );
+  }
+
+  // Convert to string for debugging
+  toString() {
+    return `(${this.x}, ${this.y})`;
+  }
+}
+
+// Bresenham's line algorithm to get grid points from start to end
+function bresenhamLine(startX, startY, endX, endY) {
+  const points = [];
+  let x = startX;
+  let y = startY;
+  const dx = Math.abs(endX - startX);
+  const dy = Math.abs(endY - startY);
+  const sx = startX < endX ? 1 : -1;
+  const sy = startY < endY ? 1 : -1;
+  let err = dx - dy;
+
+  while (true) {
+    points.push({ x, y });
+    if (x === endX && y === endY) break;
+    const e2 = 2 * err;
+    if (e2 > -dy) {
+      err -= dy;
+      x += sx;
+    }
+    if (e2 < dx) {
+      err += dx;
+      y += sy;
+    }
+  }
+  return points;
+}
+
+// VisionCone class
+class VisionCone {
+  constructor(angle, range, direction) {
+    this.angle = angle; // in degrees
+    this.range = range; // in grid units
+    this.direction = direction; // Vec2, normalized
+    this.visibilityHeatmap = {}; // key: "r-c", value: count
+  }
+
+  // Cast rays and accumulate visibility
+  // board: the Board instance
+  // agentPos: string like "5-10"
+  castRays(board, agentPos) {
+    const [agentR, agentC] = agentPos.split('-').map(Number);
+    const halfAngle = this.angle / 2;
+    const angleStep = 1; // degrees per ray, adjust for resolution
+
+    const visibleProducts = new Set();
+
+    // Cast rays from -halfAngle to +halfAngle
+    for (let offset = -halfAngle; offset <= halfAngle; offset += angleStep) {
+      const rayAngle = Math.atan2(this.direction.y, this.direction.x) + (offset * Math.PI / 180);
+      const rayDir = new Vec2(Math.cos(rayAngle), Math.sin(rayAngle));
+
+      // Endpoint at range
+      const endX = agentC + rayDir.x * this.range;
+      const endY = agentR + rayDir.y * this.range;
+
+      // Get Bresenham points
+      const points = bresenhamLine(agentC, agentR, Math.round(endX), Math.round(endY));
+
+      let hitWall = false;
+      for (const point of points) {
+        const nodeId = `${point.y}-${point.x}`;
+        const node = board.nodes[nodeId];
+        if (!node) continue; // out of bounds
+
+        // Accumulate heatmap
+        if (!this.visibilityHeatmap[nodeId]) {
+          this.visibilityHeatmap[nodeId] = 0;
+        }
+        this.visibilityHeatmap[nodeId]++;
+
+        // Update node visit counts if heatmap is enabled
+        if (board.heatmapConfig && board.heatmapConfig.enabled) {
+          if (node.status !== 'wall') {
+            // Increment vision visit count
+            node.visionVisitCount++;
+            
+            // Calculate total visit count using weights
+            node.totalVisitCount = (node.visionVisitCount * board.heatmapConfig.visionConeWeight) +
+                                   (node.pathVisitCount * board.heatmapConfig.directPathWeight);
+            
+            // Calculate heatmap intensity (0 to 1)
+            node.heatmapIntensity = Math.min(1, node.totalVisitCount / board.heatmapConfig.maxThreshold);
+          }
+        }
+
+        if (node.status === 'wall') {
+          hitWall = true;
+          break; // stop at wall
+        }
+
+        // Track products
+        if (node.status === 'product' || node.status === 'dummy-product') {
+          visibleProducts.add(nodeId);
+        }
+      }
+
+      // If hit wall, only accumulate up to wall, but since we break, it's fine
+    }
+
+    return Array.from(visibleProducts);
+  }
+
+  // Get heatmap as 2D array (for visualization if needed)
+  getHeatmapArray(height, width) {
+    const heatmap = Array.from({ length: height }, () => Array(width).fill(0));
+    for (const [id, count] of Object.entries(this.visibilityHeatmap)) {
+      const [r, c] = id.split('-').map(Number);
+      if (r >= 0 && r < height && c >= 0 && c < width) {
+        heatmap[r][c] = count;
+      }
+    }
+    return heatmap;
+  }
+}
+
+module.exports = { Vec2, VisionCone };
+},{}]},{},[4]);

@@ -12,6 +12,12 @@ function Node(id, status) {
   this.relatesToObject = false;
   this.overwriteObjectRelation = false;
 
+  // Heatmap tracking properties
+  this.visionVisitCount = 0;
+  this.pathVisitCount = 0;
+  this.totalVisitCount = 0;
+  this.heatmapIntensity = 0;
+
   this.otherid = id;
   this.otherstatus = status;
   this.otherpreviousNode = null;

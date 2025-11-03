@@ -1,4 +1,4 @@
-function astar(nodes, start, target, nodesToAnimate, boardArray, name, heuristic) {
+function astar(nodes, start, target, nodesToAnimate, boardArray, name, heuristic, board) {
   if (!start || !target || start === target) {
     return false;
   }
@@ -12,6 +12,10 @@ function astar(nodes, start, target, nodesToAnimate, boardArray, name, heuristic
       currentNode = closestNode(nodes, unvisitedNodes)
     }
     if (currentNode.distance === Infinity) return false;
+    
+    // Don't cast vision during exploration - only during actual path traversal
+    // Vision will be cast in board._animatePathNodes() as the agent actually moves
+    
     nodesToAnimate.push(currentNode);
     currentNode.status = "visited";
     if (currentNode.id === target) {
@@ -19,6 +23,32 @@ function astar(nodes, start, target, nodesToAnimate, boardArray, name, heuristic
     }
     updateNeighbors(nodes, currentNode, boardArray, target, name, start, heuristic);
   }
+}
+
+// Helper function to calculate direction vector from node movement
+function calculateDirection(currentNode, nodes) {
+  const { Vec2 } = require("../visionCone");
+  
+  if (!currentNode.previousNode) {
+    // Default to right if no previous node
+    return new Vec2(1, 0);
+  }
+  
+  const prevNode = nodes[currentNode.previousNode];
+  const [currR, currC] = currentNode.id.split('-').map(Number);
+  const [prevR, prevC] = prevNode.id.split('-').map(Number);
+  
+  // Calculate direction vector
+  const dx = currC - prevC;
+  const dy = currR - prevR;
+  
+  // Normalize
+  const magnitude = Math.sqrt(dx * dx + dy * dy);
+  if (magnitude === 0) {
+    return new Vec2(1, 0); // Default to right
+  }
+  
+  return new Vec2(dx / magnitude, dy / magnitude);
 }
 
 function closestNode(nodes, unvisitedNodes) {
