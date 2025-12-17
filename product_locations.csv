@@ -1,0 +1,7 @@
+Product_ID,Product_Name,Aisle,Shelf_Level,Store_Section,Visibility_Score
+101,Energy Drink,A1,Eye,Beverages,88
+102,Protein Bar,A2,Top,Snacks,76
+103,Trail Mix,A3,Middle,Snacks,69
+104,Bottled Water,B1,Bottom,Beverages,54
+105,Snack Chips,B2,Middle,Snacks,73
+106,Granola Cup,C1,Top,Healthy Foods,81
